@@ -71,28 +71,44 @@ export type SubRenderContext = {
   sdhFilterAllowed?: boolean;
 };
 
+// Only set while "Change font only" is on, so a style override from the user's own mpv options
+// stays untouched the rest of the time.
+let fontOnlyApplied = false;
+
 export async function applySubStyle(
   s: Settings,
   context: SubRenderContext = { assNativeActive: false, imageNativeActive: false },
 ): Promise<void> {
   const override = s.subAssOverride;
+  // "Change font only" keeps the ASS look like "no". mpv's "yes" then lets the style override
+  // below swap in the user's font.
+  const fontOnly = override === "font";
+  const keepAssLook = override === "no" || fontOnly;
   const normScale =
-    typeof context.assScale === "number" && Number.isFinite(context.assScale) ? context.assScale : null;
-  const effOverride = normScale != null ? "scale" : override;
-  const assMargins = context.assNativeActive && override !== "no" ? "yes" : "no";
+    typeof context.assScale === "number" && Number.isFinite(context.assScale)
+      ? context.assScale
+      : null;
+  const effOverride = fontOnly ? "yes" : normScale != null ? "scale" : override;
+  const assMargins = context.assNativeActive && !keepAssLook ? "yes" : "no";
   const marginY = clamp(Number(s.subMarginY) || 0, 0, 100);
   const opacity = clamp(Number(s.subOpacity ?? 1), 0.1, 1);
   const boxOpacity = clamp(Number(s.subBoxOpacity ?? 0.6), 0, 1);
   const isBox = s.subStyle === "box";
   const isShadow = s.subStyle === "shadow";
-  const reposition = !context.assNativeActive || override !== "no";
+  const reposition = !context.assNativeActive || !keepAssLook;
   const hideSdh = s.subHideSdh === true && context.sdhFilterAllowed !== false;
+  const font = mpvFontFor(s.subFontFamily, customFontName(s));
   const props: Array<[string, unknown]> = [
     ["sub-filter-sdh", hideSdh],
     ["sub-filter-sdh-harder", false],
     ["sub-font-size", 32],
-    ["sub-font", mpvFontFor(s.subFontFamily, customFontName(s))],
-    ["sub-scale", normScale != null ? clamp(normScale, 0.2, 6) : Math.min(4, Math.max(0.4, (Number(s.subFontSize) || 32) / 32))],
+    ["sub-font", font],
+    [
+      "sub-scale",
+      normScale != null
+        ? clamp(normScale, 0.2, 6)
+        : Math.min(4, Math.max(0.4, (Number(s.subFontSize) || 32) / 32)),
+    ],
     ["sub-color", mpvColor(s.subFontColor, opacity)],
     ["sub-border-color", mpvColor(s.subBorderColor, opacity)],
     ["sub-border-size", s.subBorderSize],
@@ -108,9 +124,12 @@ export async function applySubStyle(
     ["sub-bold", s.subBold ? "yes" : "no"],
     ["sub-pos", reposition ? clamp(100 - marginY, 0, 100) : 100],
   ];
+  if (fontOnly || fontOnlyApplied) {
+    // mpv reads this as a comma-separated list, so a comma in the name would split it.
+    props.push(["sub-ass-style-overrides", fontOnly ? `FontName=${font.replace(/,/g, "")}` : ""]);
+    fontOnlyApplied = fontOnly;
+  }
   await Promise.all(
-    props.map(([name, value]) =>
-      invoke("mpv_set_property", { name, value }).catch(() => {}),
-    ),
+    props.map(([name, value]) => invoke("mpv_set_property", { name, value }).catch(() => {})),
   );
 }

@@ -365,7 +365,7 @@ export type Settings = {
   subBorderSize: number;
   subMarginY: number;
   subAlignX: "left" | "center" | "right";
-  subAssOverride: "no" | "yes" | "force" | "scale" | "strip";
+  subAssOverride: "no" | "yes" | "force" | "scale" | "strip" | "font";
   subAssNormalizeSize: boolean;
   subStyle: "shadow" | "outline" | "box";
   subFontFamily: string;
