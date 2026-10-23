@@ -89,29 +89,55 @@ export function flipAssOverride(
   return isAssLookMode(mode) ? { mode: "force", before: mode } : { mode: before, before };
 }
 
-/**
- * The sub-ass-style-overrides value from the user's own mpv options in Harbor. mpv gets those
- * lines when it starts (parse_extra_option_lines in mpv.rs), so a later line wins.
- */
-function ownStyleOverrides(extra: string | undefined): string {
-  let value = "";
-  for (const raw of (extra ?? "").split("\n")) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#") || line.startsWith("//")) continue;
-    const eq = line.indexOf("=");
-    const cut = eq >= 0 ? eq : line.search(/\s/);
-    const key = (cut >= 0 ? line.slice(0, cut) : line)
-      .trim()
-      .replace(/^(?:--)+/, "")
-      .trim();
-    if (key === "sub-ass-style-overrides") value = cut >= 0 ? line.slice(cut + 1).trim() : "yes";
-  }
-  return value;
+const STYLE_OVERRIDES = "sub-ass-style-overrides";
+
+/** mpv reads a list option as comma-separated items, where "\," is a comma inside an item. */
+function mpvListText(items: string[]): string {
+  return items.map((item) => item.replace(/,/g, "\\,")).join(",");
 }
 
-// Harbor only touches mpv's style overrides while "Change font only" is on. It adds the font to
-// the overrides from the user's own mpv options, and puts those back when the mode is left.
-let fontOnlyApplied = false;
+function sameItems(a: string[] | null, b: string[]): boolean {
+  return a != null && a.length === b.length && a.every((item, i) => item === b[i]);
+}
+
+// Harbor only touches mpv's style overrides while "Change font only" is on. It reads the list mpv
+// has, adds the font to it, and puts that exact list back when the mode is left.
+let ownStyleOverrides: string[] | null = null;
+let harborStyleOverrides: string[] | null = null;
+let styleOverridesQueue: Promise<void> = Promise.resolve();
+
+function setStyleOverrides(items: string[]): Promise<boolean> {
+  return invoke("mpv_set_property", { name: STYLE_OVERRIDES, value: mpvListText(items) }).then(
+    () => true,
+    () => false,
+  );
+}
+
+function applyFontOnlyOverrides(fontOnly: boolean, font: string): Promise<void> {
+  // Each change reads mpv's list first, so the steps must not overlap.
+  styleOverridesQueue = styleOverridesQueue
+    .then(async () => {
+      if (!fontOnly && !harborStyleOverrides) return;
+      const current = await invoke<string[]>("mpv_get_property_list", {
+        name: STYLE_OVERRIDES,
+      }).catch(() => null);
+      if (!current) return;
+      // Any other list means a new mpv started from the user's own options, so there is nothing
+      // of Harbor's to undo and the new list is the one to keep.
+      const harborsList = sameItems(harborStyleOverrides, current);
+      if (!fontOnly) {
+        if (harborsList && ownStyleOverrides) await setStyleOverrides(ownStyleOverrides);
+        ownStyleOverrides = null;
+        harborStyleOverrides = null;
+        return;
+      }
+      if (!harborsList) ownStyleOverrides = current;
+      const next = [...(ownStyleOverrides ?? []).filter(Boolean), `FontName=${font}`];
+      harborStyleOverrides = (await setStyleOverrides(next)) ? next : null;
+    })
+    .catch(() => {});
+  return styleOverridesQueue;
+}
 
 export async function applySubStyle(
   s: Settings,
@@ -162,17 +188,8 @@ export async function applySubStyle(
     ["sub-bold", s.subBold ? "yes" : "no"],
     ["sub-pos", reposition ? clamp(100 - marginY, 0, 100) : 100],
   ];
-  if (fontOnly || fontOnlyApplied) {
-    const own = ownStyleOverrides(s.mpvExtraOptions);
-    // mpv reads this as a comma-separated list, so a comma in the name would split it.
-    const fontName = `FontName=${font.replace(/,/g, "")}`;
-    props.push([
-      "sub-ass-style-overrides",
-      fontOnly ? [own, fontName].filter(Boolean).join(",") : own,
-    ]);
-    fontOnlyApplied = fontOnly;
-  }
-  await Promise.all(
-    props.map(([name, value]) => invoke("mpv_set_property", { name, value }).catch(() => {})),
-  );
+  await Promise.all([
+    ...props.map(([name, value]) => invoke("mpv_set_property", { name, value }).catch(() => {})),
+    applyFontOnlyOverrides(fontOnly, font),
+  ]);
 }
