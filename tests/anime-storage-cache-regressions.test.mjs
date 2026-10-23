@@ -55,7 +55,7 @@ test("selected profiles stay independent while watched state follows Stremio sha
   assert.equal(h.profiles.activeProfileId(), "alice");
   assert.equal(h.profiles.stremioProfileId(), "primary");
   assert.equal(h.profiles.primaryProfileId(), "primary");
-  const resume = h.load("resume", { "./cw-profile": { privateCwProfileId: () => "alice" } });
+  const resume = h.load("resume", { "./cw-profile": { privateCwProfileId: () => "alice" }, "./active-profile-id": h.profiles });
   resume.saveResumeMs(
     "tt1",
     90_000,
@@ -106,7 +106,7 @@ test("reading legacy movie watches before roster initialization defers migration
 
 test("provider fallback remains cached and reacts to legacy settings and explicit overrides", () => {
   const h = harness();
-  const resume = h.load("resume", { "./cw-profile": { privateCwProfileId: () => null } });
+  const resume = h.load("resume", { "./cw-profile": { privateCwProfileId: () => null }, "./active-profile-id": h.profiles });
   h.data.set("harbor.settings.shared", '{"theme":"dark"}');
   h.data.set("harbor.settings", '{"accountProvider":"nuvio"}');
   assert.equal(h.profiles.isNuvioProviderActive(), true);
@@ -126,4 +126,39 @@ test("provider fallback remains cached and reacts to legacy settings and explici
   assert.equal(h.profiles.isNuvioProviderActive(), true);
   h.data.set("harbor.account-provider", "stremio");
   assert.equal(h.profiles.isNuvioProviderActive(), false);
+});
+
+test("resume and watched flags use the same provider when legacy settings disagree", () => {
+  const h = harness();
+  h.data.set("harbor.settings.shared", '{"accountProvider":"stremio"}');
+  h.data.set("harbor.settings", '{"accountProvider":"nuvio"}');
+  const resume = h.load("resume", { "./cw-profile": { privateCwProfileId: () => null },
+    "./active-profile-id": h.profiles });
+  assert.equal(h.profiles.isNuvioProviderActive(), false);
+  resume.saveResumeMs("tt-order", 1234);
+  assert.ok(h.data.has("harbor.resume"));
+  assert.equal(h.data.has("harbor.resume.private.v1.anon.nuvio-1"), false);
+});
+
+
+test("bulk Nuvio watched flags are isolated and updated with one storage write", () => {
+  const h = harness();
+  h.data.set("harbor.account-provider", "nuvio");
+  let writes = 0;
+  const flags = h.load("watched-flag", {
+    "./active-profile-id": h.profiles,
+    "./movie-watched": { isMovieWatchedLocal: () => false, subscribeMovieWatched: () => () => {} },
+    "./storage-recovery": { persistCritical: (key, value) => { writes += 1; h.data.set(key, value); } },
+    react: {},
+  });
+  const ids = new Set(Array.from({ length: 1400 }, (_, i) => `tt-watch-${i}`));
+  flags.reconcileNuvioWatchedFlags(1, ids);
+  assert.equal(writes, 1);
+  assert.equal(flags.isWatchedFlagged("tt-watch-1399"), true);
+  flags.reconcileNuvioWatchedFlags(1, ids);
+  assert.equal(writes, 1, "same snapshot should not write twice");
+  h.data.set("harbor.account-provider", "stremio");
+  assert.equal(flags.isWatchedFlagged("tt-watch-1399"), false);
+  h.data.set("harbor.account-provider", "nuvio");
+  assert.equal(flags.isWatchedFlagged("tt-watch-1399"), true);
 });

@@ -966,6 +966,11 @@ export function DetailView({
       ? animeDetails(
           settingsRef.current,
           detectedKitsu != null ? { ...meta, id: `kitsu:${detectedKitsu}` } : lookup,
+          (earlyEpisodes, kitsuId) => {
+            if (cancelled) return;
+            setAnimeCanonicalId(`kitsu:${kitsuId}`);
+            setAnimeEpisodes(earlyEpisodes);
+          },
         ).then((res) => {
           if (cancelled) return null;
           if (!res) {
@@ -2302,6 +2307,7 @@ export function DetailView({
           </div>
         )}
         {loading &&
+          !(isAnime && animeEpisodes.length > 1) &&
           (meta.type === "series" || isAnime) &&
           (meta.type === "movie" || /^(MOVIE|OVA|SPECIAL|MUSIC)$/i.test(meta.animeFormat ?? "") ? (
             <MovieEntrySkeleton />
@@ -2310,7 +2316,6 @@ export function DetailView({
           ))}
 
         {!liveContext &&
-          detail &&
           isAnime &&
           (animeEpisodes.length > 1 || franchise.length > 1) && (
             <FadeInUp>
@@ -2323,16 +2328,16 @@ export function DetailView({
                 trackId={animeCanonicalId ?? undefined}
                 episodeHint={episodeHint}
                 imdbId={
-                  detail.imdbId ??
+                  detail?.imdbId ??
                   animeEpisodes.find((e) => e.imdbId)?.imdbId ??
                   (meta.id.startsWith("tt") ? meta.id : null)
                 }
                 onSeasonArt={handleSeasonArt}
                 localizedOverview={localizedAnimeOverview}
-                seasonOverviews={detail.seasonOverviews}
-                tmdbTvId={detail.tmdbTvId}
-                tmdbSeasons={detail.seasons}
-                seasonPosters={detail.seasonPosters}
+                seasonOverviews={detail?.seasonOverviews}
+                tmdbTvId={detail?.tmdbTvId}
+                tmdbSeasons={detail?.seasons}
+                seasonPosters={detail?.seasonPosters}
               />
             </FadeInUp>
           )}

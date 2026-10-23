@@ -17,32 +17,15 @@ import type {
   NuvioWatchProgress,
   NuvioWatchedItem,
 } from "./nuvio-types";
-import { setWatchedFlag } from "@/lib/watched-flag";
-import { setMovieWatchedLocal } from "@/lib/movie-watched";
+import { reconcileNuvioWatchedFlags } from "@/lib/watched-flag";
+import { reconcileNuvioMovieWatched } from "@/lib/movie-watched";
 import { reconcileNuvioWatchedEpisodes } from "@/lib/manual-watched";
 import { clearAllLocalCw, clearLocalCw, saveLocalCw } from "@/lib/local-cw";
 import { clearResume } from "@/lib/resume";
+import { isNuvioProviderActive } from "@/lib/active-profile-id";
 import { readCachedNuvioPlaybackItems, writeCachedNuvioPlaybackItems } from "./nuvio-playback";
 
-/**
- * Returns true if Nuvio is the currently active account provider in Harbor.
- */
-export function isNuvioProviderActive(): boolean {
-  try {
-    const explicit = localStorage.getItem("harbor.account-provider");
-    if (explicit === "nuvio") return true;
-    if (explicit === "stremio") return false;
-    for (const key of ["harbor.settings.shared", "harbor.settings", "harbor.settings.v1"]) {
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed.accountProvider === "nuvio") return true;
-        if (parsed.accountProvider === "stremio") return false;
-      }
-    }
-  } catch {}
-  return false;
-}
+export { isNuvioProviderActive } from "@/lib/active-profile-id";
 
 /**
  * Resolves the effective Nuvio profile index (1..6) considering active provider setting.
@@ -519,53 +502,112 @@ export async function markWatchedInNuvio(
 /**
  * Pulls watched items for a specific profile slot from Nuvio
  */
+const NUVIO_WATCHED_PAGE_SIZE = 1000;
+const NUVIO_WATCHED_MAX_PAGES = 100;
+
 export async function pullWatchedItemsFromNuvio(
   harborProfileId?: string | number,
-): Promise<NuvioWatchedItem[]> {
-  if (!isNuvioSignedIn()) return [];
+): Promise<NuvioWatchedItem[] | null> {
+  if (!isNuvioSignedIn() || !isNuvioProviderActive()) return null;
+  const accountId = getNuvioAccountId();
+  if (!accountId) return null;
   const profileIndex = resolveNuvioProfileIndex(harborProfileId);
+  const stillCurrent = () =>
+    isNuvioSignedIn() &&
+    isNuvioProviderActive() &&
+    getNuvioAccountId() === accountId &&
+    resolveNuvioProfileIndex() === profileIndex;
 
-  // 1. Try official sync_pull_watched_items RPC (matching Nuvio Mobile)
+  // A partial snapshot MUST NOT be used to remove local watched records.
+  const collect = async (
+    fetchPage: (page: number) => Promise<Response>,
+  ): Promise<NuvioWatchedItem[] | null> => {
+    const items: NuvioWatchedItem[] = [];
+    const seen = new Set<string>();
+    for (let page = 0; page < NUVIO_WATCHED_MAX_PAGES; page++) {
+      const res = await fetchPage(page);
+      if (!res.ok || !stillCurrent()) return null;
+      const rows: unknown = await res.json();
+      if (!Array.isArray(rows) || rows.length > NUVIO_WATCHED_PAGE_SIZE) return null;
+      for (const row of rows) {
+        if (!row || typeof row !== "object") return null;
+        const entry = row as NuvioWatchedItem;
+        const id = `${entry.content_id}|${entry.season ?? ""}|${entry.episode ?? ""}`;
+        // A server that repeats a page is not providing an exhaustive snapshot.
+        if (seen.has(id)) return null;
+        seen.add(id);
+        items.push(entry);
+      }
+      if (rows.length < NUVIO_WATCHED_PAGE_SIZE) {
+        return stillCurrent() ? items : null;
+      }
+    }
+    return null;
+  };
+
   try {
-    const rpcRes = await nuvioFetch("/rest/v1/rpc/sync_pull_watched_items", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        p_profile_id: profileIndex,
-        p_page: 1,
-        p_page_size: 1000,
+    const rpc = await collect((page) =>
+      nuvioFetch("/rest/v1/rpc/sync_pull_watched_items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          p_profile_id: profileIndex,
+          p_page: page + 1,
+          p_page_size: NUVIO_WATCHED_PAGE_SIZE,
+        }),
       }),
-    });
-    if (rpcRes.ok) {
-      const data = await rpcRes.json();
-      if (Array.isArray(data)) return data as NuvioWatchedItem[];
-    }
-  } catch {}
-
-  // 2. Fallback to direct table query
-  try {
-    const res = await nuvioFetch(`/rest/v1/watched_items?profile_id=eq.${profileIndex}&select=*`);
-    if (res.ok) {
-      const data = await res.json();
-      return Array.isArray(data) ? (data as NuvioWatchedItem[]) : [];
-    }
-  } catch (err) {
-    console.warn("[nuvio] failed to pull watched items", err);
+    );
+    if (rpc !== null && rpc.length > 0) return rpc;
+  } catch {
+    // Try the complete table snapshot instead, never a partial RPC page.
   }
-  return [];
+  if (!stillCurrent()) return null;
+  try {
+    return await collect((page) =>
+      nuvioFetch(
+        `/rest/v1/watched_items?profile_id=eq.${profileIndex}&select=*&limit=${NUVIO_WATCHED_PAGE_SIZE}&offset=${page * NUVIO_WATCHED_PAGE_SIZE}`,
+      ),
+    );
+  } catch (err) {
+    console.warn("[nuvio] failed to pull complete watched items", err);
+    return null;
+  }
 }
 
 /**
  * Reconciles remote watched items into local watched-flag, movie-watched, and manual-watched storage
  * for the active Nuvio profile slot.
  */
-export async function reconcileNuvioWatched(
-  harborProfileId?: string | number,
-): Promise<void> {
+const watchedReconcileInflight = new Map<string, Promise<void>>();
+
+export function reconcileNuvioWatched(harborProfileId?: string | number): Promise<void> {
+  if (!isNuvioSignedIn() || !isNuvioProviderActive()) return Promise.resolve();
+  const accountId = getNuvioAccountId();
+  if (!accountId) return Promise.resolve();
+  const slot = resolveNuvioProfileIndex(harborProfileId);
+  const key = `${accountId}:${slot}`;
+  const existing = watchedReconcileInflight.get(key);
+  if (existing) return existing;
+  const work = reconcileNuvioWatchedOnce(slot);
+  watchedReconcileInflight.set(key, work);
+  void work.finally(() => {
+    if (watchedReconcileInflight.get(key) === work) watchedReconcileInflight.delete(key);
+  }).catch(() => {});
+  return work;
+}
+
+async function reconcileNuvioWatchedOnce(harborProfileId?: string | number): Promise<void> {
   if (!isNuvioSignedIn() || !isNuvioProviderActive()) return;
   const profileIndex = resolveNuvioProfileIndex(harborProfileId);
+  const accountId = getNuvioAccountId();
   const items = await pullWatchedItemsFromNuvio(profileIndex);
-  if (!items) return;
+  if (
+    !items ||
+    !accountId ||
+    getNuvioAccountId() !== accountId ||
+    !isNuvioProviderActive() ||
+    resolveNuvioProfileIndex() !== profileIndex
+  ) return;
 
   const serverWatchedIds = new Set<string>();
   const serverMovieIds = new Set<string>();
@@ -587,30 +629,10 @@ export async function reconcileNuvioWatched(
   // unflagged episodes (handling single unmarks, up-to unmarks, and whole-season unmarks from Nuvio mobile)
   reconcileNuvioWatchedEpisodes(profileIndex, serverEpisodeKeys);
 
-  // 2. Update watched flags for all items reported by Nuvio Cloud
-  for (const id of serverWatchedIds) {
-    setWatchedFlag(id, true);
-  }
-  for (const id of serverMovieIds) {
-    setMovieWatchedLocal(id, true);
-  }
-
-  // 3. Prune any locally flagged items that were deleted/unmarked on Nuvio cloud
-  try {
-    const flagKey = `harbor.watchedFlag.nuvio.v1.${profileIndex}`;
-    const rawFlags = localStorage.getItem(flagKey);
-    if (rawFlags) {
-      const stored = JSON.parse(rawFlags);
-      if (Array.isArray(stored)) {
-        for (const localId of stored) {
-          if (!serverWatchedIds.has(localId)) {
-            setWatchedFlag(localId, false);
-            setMovieWatchedLocal(localId, false);
-          }
-        }
-      }
-    }
-  } catch {}
+  // A complete snapshot is authoritative. Commit once, not once per item:
+  // repeated writes were O(n^2) on shows with thousands of watched episodes.
+  reconcileNuvioWatchedFlags(profileIndex, serverWatchedIds);
+  reconcileNuvioMovieWatched(profileIndex, serverMovieIds);
 
   window.dispatchEvent(
     new CustomEvent("harbor:nuvio-watched-reconciled", { detail: { profileIndex } }),
@@ -861,6 +883,7 @@ export async function pullWatchProgressFromNuvio(
         }
 
         const prevCached = readCachedWatchProgress(profileIndex, startingAccountId);
+        const completeSnapshot = data.length < 50;
         const serverProgressKeys = new Set<string>();
         const serverContentIds = new Set<string>();
         const serverItems: NuvioWatchProgress[] = [];
@@ -905,14 +928,19 @@ export async function pullWatchProgressFromNuvio(
 
         if (!isCurrentAccount()) return [];
 
-        // Reconcile: identify any cached items that were deleted on another device!
+        // The RPC returns only the latest 50 records. Missing entries are not deletions
+        // when the limit was reached, so retain their progress and playback caches.
         for (const prev of prevCached) {
-          if (!serverProgressKeys.has(prev.progress_key) && !serverContentIds.has(prev.content_id)) {
-            clearLocalCw(prev.content_id, `nuvio-${profileIndex}`);
-            clearLocalCw(prev.content_id);
-            clearResume(prev.content_id, undefined, undefined, `nuvio-${profileIndex}`);
-            clearResume(prev.content_id);
+          if (serverProgressKeys.has(prev.progress_key)) continue;
+          if (!completeSnapshot) {
+            serverItems.push(prev);
+            serverContentIds.add(prev.content_id);
+            continue;
           }
+          clearLocalCw(prev.content_id, `nuvio-${profileIndex}`);
+          clearLocalCw(prev.content_id);
+          clearResume(prev.content_id, undefined, undefined, `nuvio-${profileIndex}`);
+          clearResume(prev.content_id);
         }
         if (!isCurrentAccount()) return [];
 
@@ -1040,12 +1068,16 @@ export async function pullWatchProgressFromNuvio(
         if (!isCurrentAccount()) return [];
 
         for (const prev of prevCached) {
-          if (!serverProgressKeys.has(prev.progress_key) && !serverContentIds.has(prev.content_id)) {
-            clearLocalCw(prev.content_id, `nuvio-${profileIndex}`);
-            clearLocalCw(prev.content_id);
-            clearResume(prev.content_id, undefined, undefined, `nuvio-${profileIndex}`);
-            clearResume(prev.content_id);
+          if (serverProgressKeys.has(prev.progress_key)) continue;
+          if (list.length >= 1000) {
+            serverItems.push(prev);
+            serverContentIds.add(prev.content_id);
+            continue;
           }
+          clearLocalCw(prev.content_id, `nuvio-${profileIndex}`);
+          clearLocalCw(prev.content_id);
+          clearResume(prev.content_id, undefined, undefined, `nuvio-${profileIndex}`);
+          clearResume(prev.content_id);
         }
         if (!isCurrentAccount()) return [];
 

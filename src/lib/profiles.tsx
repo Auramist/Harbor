@@ -1,3 +1,4 @@
+import { isNuvioProviderActive } from "@/lib/active-profile-id";
 import { purgeGameNotes } from "./games/game-notes";
 import {
   createContext,
@@ -908,23 +909,6 @@ export function useProfiles(): ProfilesValue {
   const v = useContext(Ctx);
   if (!v) throw new Error("useProfiles outside ProfilesProvider");
   return v;
-}
-
-function isNuvioProviderActive(): boolean {
-  try {
-    const explicit = localStorage.getItem("harbor.account-provider");
-    if (explicit === "nuvio") return true;
-    if (explicit === "stremio") return false;
-    for (const key of ["harbor.settings.shared", "harbor.settings", "harbor.settings.v1"]) {
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed.accountProvider === "nuvio") return true;
-        if (parsed.accountProvider === "stremio") return false;
-      }
-    }
-  } catch {}
-  return false;
 }
 
 export function useActiveKid(): KidConfig | null {

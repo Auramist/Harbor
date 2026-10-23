@@ -65,6 +65,27 @@ function persist(next: Set<string>): void {
   for (const fn of subs) fn();
 }
 
+/** Apply one verified Nuvio snapshot without quadratic storage writes. */
+export function reconcileNuvioMovieWatched(slot: number, serverIds: ReadonlySet<string>): void {
+  const key = `harbor.moviewatched.nuvio.v1.${slot}`;
+  let previous: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
+    if (Array.isArray(parsed)) previous = parsed.filter((id): id is string => typeof id === "string");
+  } catch {
+    // Replace malformed cache with the verified cloud state.
+  }
+  const next = new Set(serverIds);
+  if (previous.length === next.size && previous.every((id) => next.has(id))) return;
+  persistCritical(key, JSON.stringify([...next]));
+  if (storeKey() === key) {
+    currentScope = key;
+    cache = next;
+  }
+  version += 1;
+  for (const fn of subs) fn();
+}
+
 export function isMovieWatchedLocal(metaId: string): boolean {
   return load().has(metaId);
 }

@@ -364,6 +364,7 @@ function buildSimilarRails(
 export async function animeDetails(
   settings: Settings,
   meta: Meta,
+  onEpisodesReady?: (episodes: KitsuEpisode[], kitsuId: number) => void,
 ): Promise<AnimeDetailResult | null> {
   let kitsuId = parseKitsuId(meta.id);
   let directMeta: AnimeKitsuMeta | null = null;
@@ -391,11 +392,18 @@ export async function animeDetails(
       }
     }
   }
-  const addonMeta =
-    directMeta && parseKitsuId(directMeta.id) === kitsuId && directMeta.videos.length > 0
-      ? directMeta
-      : await animeKitsuMeta(`kitsu:${kitsuId}`).catch(() => null);
   if (!anime) return null;
+  const addonMetaPromise =
+    directMeta && parseKitsuId(directMeta.id) === kitsuId && directMeta.videos.length > 0
+      ? Promise.resolve(directMeta)
+      : animeKitsuMeta(`kitsu:${kitsuId}`).catch(() => null);
+  // The addon's video IDs are immediately playable. Publish them before waiting
+  // for characters, translations, mappings, and the full TVDB episode catalog.
+  void addonMetaPromise
+    .then((addon) => {
+      if (addon?.videos.length) onEpisodesReady?.(buildKitsuEpisodes(addon, []), kitsuId);
+    })
+    .catch(() => {});
 
   const kind: "movie" | "tv" = anime.subtype === "movie" ? "movie" : "tv";
   const iso1 = settings.tmdbLanguage || settings.uiLanguage || "en";
@@ -407,8 +415,9 @@ export async function animeDetails(
   // here: the episode grid only needs the values below.
   const recommendationPoolPromise = animeRecommendations(kitsuId).catch(() => [] as Meta[]);
 
-  const [kitsuRawEpisodes, characters, related, studios, streamers, aniZip, tvdbEpsRaw] =
+  const [addonMeta, kitsuRawEpisodes, characters, related, studios, streamers, aniZip, tvdbEpsRaw] =
     await Promise.all([
+      addonMetaPromise,
       kitsuEpisodes(kitsuId, 100),
       kitsuCharacters(kitsuId, 30),
       kitsuRelated(kitsuId),

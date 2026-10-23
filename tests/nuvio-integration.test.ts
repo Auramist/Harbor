@@ -42,6 +42,8 @@ import {
   clearCachedWatchProgress,
   deleteWatchProgressFromNuvio,
   pullWatchProgressFromNuvio,
+  pullWatchedItemsFromNuvio,
+  reconcileNuvioWatched,
 } from "../src/lib/nuvio/nuvio-sync";
 import {
   fetchNuvioPlaybackItems,
@@ -1058,6 +1060,135 @@ test("Discarded watch progress pull does not clear the next account's playback c
       readCachedNuvioPlaybackItems(1, "user-b").map((item) => item._id),
       ["tt-b-only"],
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Nuvio watched snapshots page past 1000 and failed reads never prune local state", async () => {
+  mockStorage.clear();
+  mockStorage.set("harbor.account-provider", "nuvio");
+  saveNuvioState({
+    session: {
+      access_token: "paging-test",
+      refresh_token: "paging-refresh",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      token_type: "bearer",
+      user: { id: "paging-account" },
+    },
+    profiles: [{ id: "paging-profile", name: "Main", profile_index: 1, user_id: "paging-account" }],
+    activeProfileIndex: 1,
+    lastSyncedAt: null,
+  });
+
+  const originalFetch = globalThis.fetch;
+  let pages = 0;
+  try {
+    globalThis.fetch = async (url: any, init?: any) => {
+      if (String(url).includes("sync_pull_watched_items")) {
+        const request = JSON.parse(String(init?.body ?? "{}"));
+        pages += 1;
+        const rows = request.p_page === 1
+          ? Array.from({ length: 1000 }, (_, i) => ({ content_id: `tt-page-${i}`, content_type: "movie" }))
+          : [{ content_id: "kitsu:12", season: 1, episode: 1001, content_type: "series" }];
+        return { ok: true, status: 200, json: async () => rows } as Response;
+      }
+      throw new Error("Unexpected request");
+    };
+    const items = await pullWatchedItemsFromNuvio(1);
+    assert.equal(items?.length, 1001, "all pages should be collected");
+    assert.equal(pages, 2, "full first page requires a second request");
+
+    const key = "harbor.manualwatched.v1.nuvio.1";
+    mockStorage.set(key, '["kitsu:12|1|200"]');
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+    }) as Response;
+    assert.equal(await pullWatchedItemsFromNuvio(1), null);
+    await reconcileNuvioWatched(1);
+    assert.equal(mockStorage.get(key), '["kitsu:12|1|200"]');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Nuvio limited watch-progress response preserves cached episodes beyond the first 50", async () => {
+  mockStorage.clear();
+  mockStorage.set("harbor.account-provider", "nuvio");
+  saveNuvioState({
+    session: {
+      access_token: "limit-test",
+      refresh_token: "limit-refresh",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      token_type: "bearer",
+      user: { id: "limit-account" },
+    },
+    profiles: [{ id: "limit-profile", name: "Main", profile_index: 1, user_id: "limit-account" }],
+    activeProfileIndex: 1,
+    lastSyncedAt: null,
+  });
+  const cached = Array.from({ length: 60 }, (_, i) => ({
+    profile_id: 1,
+    content_id: "kitsu:12",
+    progress_key: `kitsu:12:1:${i + 1}`,
+    progress_seconds: 100,
+    duration_seconds: 1000,
+    season: 1,
+    episode: i + 1,
+    updated_at: new Date().toISOString(),
+    last_watched: Date.now(),
+  }));
+  writeCachedWatchProgress(1, cached, "limit-account");
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url: any) => {
+      assert.ok(String(url).includes("sync_pull_watch_progress"));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => cached.slice(0, 50),
+      } as Response;
+    };
+    const result = await pullWatchProgressFromNuvio(1);
+    assert.equal(result.length, 60);
+    assert.equal(readCachedWatchProgress(1, "limit-account").length, 60);
+    assert.ok(result.some((item) => item.episode === 60));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
+test("simultaneous detail and home watched reconciliation shares one cloud snapshot", async () => {
+  mockStorage.clear();
+  mockStorage.set("harbor.account-provider", "nuvio");
+  saveNuvioState({
+    session: {
+      access_token: "once-token", refresh_token: "once-refresh",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      token_type: "bearer", user: { id: "singleflight-account" },
+    },
+    profiles: [{ id: "p1", name: "Main", profile_index: 1, user_id: "singleflight-account" }],
+    activeProfileIndex: 1,
+    lastSyncedAt: null,
+  });
+  const originalFetch = globalThis.fetch;
+  let finish!: (response: Response) => void;
+  const pending = new Promise<Response>((resolve) => { finish = resolve; });
+  let calls = 0;
+  try {
+    globalThis.fetch = async () => { calls += 1; return pending; };
+    const fromHome = reconcileNuvioWatched();
+    const fromDetail = reconcileNuvioWatched();
+    assert.strictEqual(fromHome, fromDetail);
+    finish({
+      ok: true, status: 200,
+      json: async () => [{ content_id: "tt-one", content_type: "movie" }],
+    } as Response);
+    await Promise.all([fromHome, fromDetail]);
+    assert.equal(calls, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

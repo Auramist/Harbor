@@ -1,5 +1,6 @@
 import type { ExternalCwSource } from "@/lib/stremio";
 import { privateCwProfileId } from "./cw-profile";
+import { isNuvioProviderActive as isNuvioMode } from "./active-profile-id";
 
 const KEY = "harbor.resume";
 const PRIVATE_PREFIX = "harbor.resume.private.v1.";
@@ -23,28 +24,6 @@ function nuvioAccountId(): string {
   } catch {}
   cachedNuvioAccountId = "anon";
   return "anon";
-}
-
-const cachedSettings = new Map<string, { raw: string; provider: unknown }>();
-
-function isNuvioMode(): boolean {
-  try {
-    const explicit = localStorage.getItem("harbor.account-provider");
-    if (explicit === "nuvio") return true;
-    if (explicit === "stremio") return false;
-    for (const key of ["harbor.settings.shared", "harbor.settings", "harbor.settings.v1"]) {
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        let cached = cachedSettings.get(key);
-        if (cached?.raw !== raw) {
-          cached = { raw, provider: JSON.parse(raw).accountProvider };
-          cachedSettings.set(key, cached);
-        }
-        if (cached.provider === "nuvio") return true;
-      }
-    }
-  } catch {}
-  return false;
 }
 
 let cachedSlotRaw: string | null = null;
