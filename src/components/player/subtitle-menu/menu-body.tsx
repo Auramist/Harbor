@@ -14,6 +14,8 @@ import { hasImportedSubTitle, markImportedSub, useImportedSubs } from "@/lib/pla
 import { setSecondarySub } from "@/lib/player/secondary-sub";
 import { canBeSecondarySub } from "@/lib/player/sub-format";
 import { useT } from "@/lib/i18n";
+import { externalMpvEnabled } from "@/lib/player/external-mpv";
+import { useSettings } from "@/lib/settings";
 import { HoverTooltip } from "@/components/hover-tooltip";
 import { filterTracksByPreferredLanguage, isGeneratedLangLabel } from "@/lib/subtitles/language";
 import { SearchSection } from "./search-section";
@@ -35,6 +37,8 @@ export function MenuBody(props: SubtitleMenuProps & { onClose: () => void }) {
     props;
   const preferredLanguages = props.preferredLanguages ?? [];
   const importedTitles = useImportedSubs();
+  // Harbor can't see which subtitles the user's own mpv has, so this panel never lists them.
+  const externalMpv = externalMpvEnabled(useSettings().settings);
   const languageTracks = useMemo(() => {
     const filtered = filterTracksByPreferredLanguage(tracks, preferredLanguages);
 
@@ -371,23 +375,29 @@ export function MenuBody(props: SubtitleMenuProps & { onClose: () => void }) {
               </button>
             </p>
           )}
-          {search?.status === "idle" && search.lastAdded == null && totalExternal === 0 && (
-            <div
-              role="status"
-              className="flex shrink-0 items-center gap-3 border-b border-edge-soft px-3 py-2 text-[11.5px] text-ink-muted"
-            >
-              <span className="min-w-0 flex-1">
-                {tr("Only embedded subtitles are available right now.")}
-              </span>
-              <button
-                type="button"
-                onClick={() => search.refresh()}
-                className="shrink-0 rounded-full bg-elevated px-3 py-1.5 font-semibold text-ink ring-1 ring-edge-soft transition-colors hover:bg-raised"
+          {search?.status === "idle" &&
+            search.lastAdded == null &&
+            (externalMpv || totalExternal === 0) && (
+              <div
+                role="status"
+                className="flex shrink-0 items-center gap-3 border-b border-edge-soft px-3 py-2 text-[11.5px] text-ink-muted"
               >
-                {tr("Search all sources again")}
-              </button>
-            </div>
-          )}
+                <span className="min-w-0 flex-1">
+                  {externalMpv
+                    ? tr(
+                        "Harbor sends its subtitles to your mpv. Pick one in mpv's own subtitle menu.",
+                      )
+                    : tr("Only embedded subtitles are available right now.")}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => search.refresh()}
+                  className="shrink-0 rounded-full bg-elevated px-3 py-1.5 font-semibold text-ink ring-1 ring-edge-soft transition-colors hover:bg-raised"
+                >
+                  {tr("Search all sources again")}
+                </button>
+              </div>
+            )}
 
           {searchOpen ? (
             <div className="flex min-h-0 flex-1 flex-col">
@@ -404,7 +414,9 @@ export function MenuBody(props: SubtitleMenuProps & { onClose: () => void }) {
             <div className="flex-1 overflow-y-auto">
               {justImported && <ImportBanner name={justImported} />}
               {languageTracks.length === 0 ? (
-                <EmptyState searchSettled={searchSettled} veryNewMovie={veryNewMovie} />
+                !externalMpv && (
+                  <EmptyState searchSettled={searchSettled} veryNewMovie={veryNewMovie} />
+                )
               ) : visibleVariants.length === 0 ? (
                 <p className="px-5 py-6 text-[13.5px] text-ink-muted">
                   {tr("No tracks match these filters. Try toggling HI/SDH or Forced.")}
