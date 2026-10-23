@@ -18,6 +18,7 @@ import { bidiIsolate } from "@/lib/bidi";
 import { prefetchSegments } from "@/lib/skip-intro";
 import { NewBadge, UpcomingBadge } from "./badges";
 import { EpisodeDownloadButton } from "./episode-download-button";
+import { EpisodeReviewsButton } from "./episode-reviews-dialog";
 import { isNewEpisode, isUpcomingEpisode } from "./helpers";
 
 export function EpisodeRow({
@@ -184,6 +185,13 @@ export function EpisodeRow({
           )}
         </div>
       </button>
+      <EpisodeReviewsButton
+        meta={meta}
+        seriesImdbId={seriesImdbId}
+        season={ep.seasonNumber}
+        episode={ep.episodeNumber}
+        episodeTitle={ep.name || undefined}
+      />
       <HoverTooltip label={t("Episode details")} align="center" className="shrink-0 self-center">
         <button
           type="button"

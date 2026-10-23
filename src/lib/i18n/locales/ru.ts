@@ -1,3 +1,4 @@
+import reviews from "./ru/reviews";
 import playOrders from "./ru/play-orders";
 import gameRomLibrary from "./ru/game-rom-library";
 import gameNotes from "./ru/game-notes";
@@ -422,6 +423,7 @@ const ru: Record<string, string> = {
   ...gameRomLibrary,
   ...gameNotes,
   ...playOrders,
+  ...reviews,
 };
 
 export default ru;

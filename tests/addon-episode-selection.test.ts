@@ -67,6 +67,7 @@ function harness(layout: "list" | "grid" | "strip", videos: NonNullable<Meta["vi
     },
     "@/lib/i18n": { useT: () => (key: string) => key },
     "./episode-download-button": { EpisodeDownloadButton: "EpisodeDownloadButton" },
+    "./episode-reviews-dialog": { EpisodeReviewsButton: "EpisodeReviewsButton" },
     "@/lib/episode-progress": {
       resumeDefaultSeason: (_id: any, stats: any) => stats[0]?.seasonNumber ?? 0,
     },

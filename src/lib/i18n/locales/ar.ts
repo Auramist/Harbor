@@ -1,3 +1,4 @@
+import reviews from "./ar/reviews";
 import playOrders from "./ar/play-orders";
 import gameRomLibrary from "./ar/game-rom-library";
 import gameNotes from "./ar/game-notes";
@@ -411,6 +412,7 @@ const ar: Record<string, string> = {
   ...gameNotes,
   ...playOrders,
   ...contextActions,
+  ...reviews,
 };
 
 export default ar;
