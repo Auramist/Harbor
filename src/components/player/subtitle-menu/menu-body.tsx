@@ -113,6 +113,8 @@ export function MenuBody(props: SubtitleMenuProps & { onClose: () => void }) {
   const secondaryTrack = useMemo(() => tracks.find((t) => t.secondary) ?? null, [tracks]);
   const pickSecondary = props.onSelectSecondary ?? setSecondarySub;
   const search = useSubtitleSearch();
+  // Done searching, and not showing the "Added {count} more subtitles." line.
+  const searchIdle = search?.status === "idle" && search.lastAdded == null;
   const generatedOptions = search?.generated ?? [];
 
   const bestPool = allLangs ? languageTracks : (activeGroup?.variants ?? []);
@@ -375,29 +377,30 @@ export function MenuBody(props: SubtitleMenuProps & { onClose: () => void }) {
               </button>
             </p>
           )}
-          {search?.status === "idle" &&
-            search.lastAdded == null &&
-            (externalMpv || totalExternal === 0) && (
-              <div
-                role="status"
-                className="flex shrink-0 items-center gap-3 border-b border-edge-soft px-3 py-2 text-[11.5px] text-ink-muted"
-              >
-                <span className="min-w-0 flex-1">
-                  {externalMpv
-                    ? tr(
-                        "Harbor sends its subtitles to your mpv. Pick one in mpv's own subtitle menu.",
-                      )
-                    : tr("Only embedded subtitles are available right now.")}
-                </span>
+          {/* With your own mpv this list is always empty, so the note shows even while searching. */}
+          {(externalMpv || (searchIdle && totalExternal === 0)) && (
+            <div
+              role="status"
+              className="flex shrink-0 items-center gap-3 border-b border-edge-soft px-3 py-2 text-[11.5px] text-ink-muted"
+            >
+              <span className="min-w-0 flex-1">
+                {externalMpv
+                  ? tr(
+                      "Harbor sends its subtitles to your mpv. Pick one in mpv's own subtitle menu.",
+                    )
+                  : tr("Only embedded subtitles are available right now.")}
+              </span>
+              {searchIdle && (
                 <button
                   type="button"
-                  onClick={() => search.refresh()}
+                  onClick={() => search?.refresh()}
                   className="shrink-0 rounded-full bg-elevated px-3 py-1.5 font-semibold text-ink ring-1 ring-edge-soft transition-colors hover:bg-raised"
                 >
                   {tr("Search all sources again")}
                 </button>
-              </div>
-            )}
+              )}
+            </div>
+          )}
 
           {searchOpen ? (
             <div className="flex min-h-0 flex-1 flex-col">

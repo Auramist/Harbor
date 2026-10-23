@@ -277,3 +277,46 @@ test("track titles name the provider once and leave titles without a provider al
   assert.equal(mpvSubtitleTitle("My.Movie.eng", undefined), "My.Movie.eng");
   assert.equal(mpvSubtitleTitle(undefined, undefined), undefined);
 });
+
+test("different subtitles with the same name get numbers in mpv's list, per video", async () => {
+  const h = harness();
+  const add = (id: number) =>
+    h.bridge.addSubtitle(
+      `https://subs.fixture.test/${id}.srt`,
+      "spa",
+      "The Show · S01E01 · BluRay",
+      false,
+      { provider: "OpenSubtitles v3" },
+    );
+  await h.bridge.load({ url: "https://fixture.test/episode-1.mkv" });
+  await add(1);
+  await add(2);
+  await add(3);
+  h.firstFrame(1);
+  await h.bridge.load({ url: "https://fixture.test/episode-2.mkv" });
+  await add(4);
+  h.firstFrame(2);
+
+  const name = "[OpenSubtitles v3] The Show · S01E01 · BluRay";
+  assert.deepEqual(
+    h.subAdds().map((cmd) => cmd[3]),
+    [name, `${name} #2`, `${name} #3`, name],
+  );
+});
+
+test("a stream that lists the same subtitle twice gives mpv one copy", async () => {
+  const h = harness();
+  await h.bridge.load({
+    url: "https://fixture.test/show.mkv",
+    subtitles: [
+      { url: "https://subs.fixture.test/a.srt", lang: "eng" },
+      { url: "https://subs.fixture.test/a.srt", lang: "eng" },
+      { url: "https://subs.fixture.test/b.srt", lang: "spa" },
+    ],
+  });
+  h.firstFrame(1);
+  assert.deepEqual(
+    h.subAdds().map((cmd) => cmd[1]),
+    ["https://subs.fixture.test/a.srt", "https://subs.fixture.test/b.srt"],
+  );
+});

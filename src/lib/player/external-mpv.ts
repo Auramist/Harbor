@@ -114,7 +114,17 @@ export function createExternalMpvBridge(opts: ExternalMpvOptions): PlayerBridge 
   // What mpv already got for this video, by file content and by link. Two sources can serve the
   // very same subtitle (SubMaker also finds OpenSubtitles files), and mpv only needs one copy.
   let seenSubs = new Set<string>();
+  // How often each track name was used for this video. Different subtitles often get the same
+  // name (same provider and release), so later ones become "#2", "#3" in mpv's list.
+  let titleUses = new Map<string, number>();
   let unlisten: Array<() => void> = [];
+
+  const numberedTitle = (name?: string) => {
+    if (!name) return name;
+    const uses = (titleUses.get(name) ?? 0) + 1;
+    titleUses.set(name, uses);
+    return uses > 1 ? `${name} #${uses}` : name;
+  };
 
   const emit = () => {
     const next: PlayerSnapshot = { ...snap };
@@ -255,15 +265,18 @@ export function createExternalMpvBridge(opts: ExternalMpvOptions): PlayerBridge 
       const myLoad = ++loadId;
       mediaTitle = src.title ?? mediaTitle;
       session = 0;
-      // Like Harbor's own players, an addon's link must be public unless the addon runs locally.
-      pendingSubs = (src.subtitles ?? [])
-        .filter(
-          (s) =>
-            /^https?:\/\//i.test(s.url) &&
-            (s.trustedSource === true || isSafeProviderSubtitleUrl(s.url)),
-        )
-        .map((s) => ({ url: s.url, lang: s.lang }));
-      seenSubs = new Set(pendingSubs.map((s) => `url:${s.url}`));
+      pendingSubs = [];
+      seenSubs = new Set();
+      titleUses = new Map();
+      for (const s of src.subtitles ?? []) {
+        // Like Harbor's own players, an addon's link must be public unless the addon runs locally.
+        if (!/^https?:\/\//i.test(s.url)) continue;
+        if (s.trustedSource !== true && !isSafeProviderSubtitleUrl(s.url)) continue;
+        // A stream can list the same subtitle twice, and mpv only needs it once.
+        if (seenSubs.has(`url:${s.url}`)) continue;
+        seenSubs.add(`url:${s.url}`);
+        pendingSubs.push({ url: s.url, lang: s.lang });
+      }
       snap = {
         ...snap,
         status: "loading",
@@ -368,7 +381,11 @@ export function createExternalMpvBridge(opts: ExternalMpvOptions): PlayerBridge 
       }
       keys.forEach((key) => seenSubs.add(key));
       if (prepared) preparedSubs.register(prepared.cleanup, loadId);
-      pendingSubs.push({ url, lang, title: mpvSubtitleTitle(title ?? lang, metadata?.provider) });
+      pendingSubs.push({
+        url,
+        lang,
+        title: numberedTitle(mpvSubtitleTitle(title ?? lang, metadata?.provider)),
+      });
       if (snap.firstFrameReady) flushSubs();
       return true;
     },
