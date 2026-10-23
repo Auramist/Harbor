@@ -30,9 +30,12 @@ function styleHarness() {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   let calls: Array<[string, unknown]> = [];
+  type Mode = Settings["subAssOverride"];
   const module = {
     exports: {} as {
       applySubStyle: (s: Settings, context: Record<string, unknown>) => Promise<void>;
+      isAssLookMode: (mode: Mode) => boolean;
+      flipAssOverride: (mode: Mode, before: Mode) => { mode: Mode; before: Mode };
     },
   };
   new Function("require", "module", "exports", compiled)(
@@ -48,6 +51,7 @@ function styleHarness() {
     module.exports,
   );
   return {
+    exports: module.exports,
     async apply(overrides: Record<string, unknown>) {
       calls = [];
       await module.exports.applySubStyle({ ...BASE, ...overrides } as unknown as Settings, {
@@ -90,4 +94,45 @@ test("a comma in a custom font name cannot split mpv's override list", async () 
     customFonts: [{ id: "mine", name: "Mine", family: "Comic, Neue" }],
   });
   assert.equal(props.get("sub-ass-style-overrides"), "FontName=Comic Neue");
+});
+
+test("Change font only adds the font to overrides from the user's own mpv options", async () => {
+  const props = await styleHarness().apply({
+    subAssOverride: "font",
+    mpvExtraOptions: "# my options\r\n--sub-ass-style-overrides=ScaledBorderAndShadow=yes\r\n",
+  });
+  assert.equal(
+    props.get("sub-ass-style-overrides"),
+    "ScaledBorderAndShadow=yes,FontName=Times New Roman",
+  );
+});
+
+test("leaving Change font only puts the user's own overrides back", async () => {
+  const h = styleHarness();
+  const mpvExtraOptions = "sub-ass-style-overrides=ScaledBorderAndShadow=yes";
+  await h.apply({ subAssOverride: "font", mpvExtraOptions });
+  const props = await h.apply({ subAssOverride: "no", mpvExtraOptions });
+  assert.equal(props.get("sub-ass-style-overrides"), "ScaledBorderAndShadow=yes");
+});
+
+test("the player's override switch goes back to the mode from before", () => {
+  const { isAssLookMode, flipAssOverride } = styleHarness().exports;
+  // "Change font only" keeps each subtitle's look, so the switch shows off.
+  assert.equal(isAssLookMode("font"), true);
+  assert.equal(isAssLookMode("force"), false);
+  const on = flipAssOverride("font", "no");
+  assert.deepEqual(on, { mode: "force", before: "font" });
+  assert.deepEqual(flipAssOverride(on.mode, on.before), { mode: "font", before: "font" });
+  assert.deepEqual(flipAssOverride("scale", "no"), { mode: "force", before: "scale" });
+  assert.deepEqual(flipAssOverride("yes", "no"), { mode: "no", before: "no" });
+});
+
+test("the player's override switch uses these mode rules", () => {
+  const menu = readFileSync(
+    new URL("../src/components/player/sub-style-bar/advanced-menu.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(menu, /const overrideOn = !isAssLookMode\(settings\.subAssOverride\);/);
+  assert.match(menu, /flipAssOverride\(settings\.subAssOverride, assModeBeforeOverride\)/);
+  assert.match(menu, /assModeBeforeOverride = next\.before;/);
 });

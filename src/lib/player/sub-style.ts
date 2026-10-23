@@ -71,8 +71,46 @@ export type SubRenderContext = {
   sdhFilterAllowed?: boolean;
 };
 
-// Only set while "Change font only" is on, so a style override from the user's own mpv options
-// stays untouched the rest of the time.
+/** ASS modes that keep each styled subtitle's own look, so the player's override switch is off. */
+export type AssLookMode = "no" | "scale" | "font";
+
+export function isAssLookMode(mode: Settings["subAssOverride"]): mode is AssLookMode {
+  return mode === "no" || mode === "scale" || mode === "font";
+}
+
+/**
+ * Flips the player's "Override embedded styles" switch. Switching it off goes back to the mode
+ * the user had before, so "Change font only" or the size option isn't lost on the way.
+ */
+export function flipAssOverride(
+  mode: Settings["subAssOverride"],
+  before: AssLookMode,
+): { mode: Settings["subAssOverride"]; before: AssLookMode } {
+  return isAssLookMode(mode) ? { mode: "force", before: mode } : { mode: before, before };
+}
+
+/**
+ * The sub-ass-style-overrides value from the user's own mpv options in Harbor. mpv gets those
+ * lines when it starts (parse_extra_option_lines in mpv.rs), so a later line wins.
+ */
+function ownStyleOverrides(extra: string | undefined): string {
+  let value = "";
+  for (const raw of (extra ?? "").split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith("//")) continue;
+    const eq = line.indexOf("=");
+    const cut = eq >= 0 ? eq : line.search(/\s/);
+    const key = (cut >= 0 ? line.slice(0, cut) : line)
+      .trim()
+      .replace(/^(?:--)+/, "")
+      .trim();
+    if (key === "sub-ass-style-overrides") value = cut >= 0 ? line.slice(cut + 1).trim() : "yes";
+  }
+  return value;
+}
+
+// Harbor only touches mpv's style overrides while "Change font only" is on. It adds the font to
+// the overrides from the user's own mpv options, and puts those back when the mode is left.
 let fontOnlyApplied = false;
 
 export async function applySubStyle(
@@ -125,8 +163,13 @@ export async function applySubStyle(
     ["sub-pos", reposition ? clamp(100 - marginY, 0, 100) : 100],
   ];
   if (fontOnly || fontOnlyApplied) {
+    const own = ownStyleOverrides(s.mpvExtraOptions);
     // mpv reads this as a comma-separated list, so a comma in the name would split it.
-    props.push(["sub-ass-style-overrides", fontOnly ? `FontName=${font.replace(/,/g, "")}` : ""]);
+    const fontName = `FontName=${font.replace(/,/g, "")}`;
+    props.push([
+      "sub-ass-style-overrides",
+      fontOnly ? [own, fontName].filter(Boolean).join(",") : own,
+    ]);
     fontOnlyApplied = fontOnly;
   }
   await Promise.all(
