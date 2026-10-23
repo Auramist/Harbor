@@ -94,6 +94,7 @@ import recent from "./tr/recent";
 import residual from "./tr/residual";
 import finalResidual from "./tr/final";
 import coverage from "./tr/coverage";
+import subtitles from "./tr/subtitles";
 import plugins from "./tr/plugins";
 import brands from "./tr/brands";
 import bpSports from "./tr/bp-sports";
@@ -290,6 +291,7 @@ const tr: Record<string, string> = {
   ...residual,
   ...finalResidual,
   ...coverage,
+  ...subtitles,
   ...settingsRefinements,
   ...plugins,
   ...brands,

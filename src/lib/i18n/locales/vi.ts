@@ -80,6 +80,7 @@ import contextActionsFallback from "./context-actions-fallback";
 import ebookSources from "./vi/ebook-sources";
 import settingsRefinements from "./vi/settings-refinements";
 import coverage from "./vi/coverage";
+import subtitles from "./vi/subtitles";
 import gap from "./vi/gap";
 import plurals from "./vi/plurals";
 import settingsFill from "./vi/settings-fill";
@@ -295,6 +296,7 @@ const vi: Record<string, string> = {
 
   ...ebookSources,
   ...coverage,
+  ...subtitles,
   ...gap,
   ...plurals,
   ...settingsFill,

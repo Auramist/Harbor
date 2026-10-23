@@ -82,6 +82,7 @@ import settingsRefinements from "./ru/settings-refinements";
 import gap from "./ru/gap";
 import experimentalUpdates from "./ru/experimental-updates";
 import coverage from "./ru/coverage";
+import subtitles from "./ru/subtitles";
 import uiFallback from "./ui-fallback";
 import chrome from "./ru/chrome";
 import common from "./ru/common";
@@ -303,6 +304,7 @@ const ru: Record<string, string> = {
 
   ...ebookSources,
   ...coverage,
+  ...subtitles,
   ...uiFallback,
   ...gap,
   ...chrome,
