@@ -51,6 +51,7 @@ export function EpisodeGridCard({
   useEffect(() => () => window.clearTimeout(timer.current), []);
 
   const still = g.stills[imgIdx];
+  const airDate = formatAirDate(g.airDate);
   const watched = progress.watched;
   const partial = !watched && progress.ratio > 0.01;
   const minsLeft =
@@ -136,7 +137,7 @@ export function EpisodeGridCard({
           <span className="text-[11.5px] text-ink-subtle">
             {bidiIsolate(g.seasonLabel ? `${g.seasonLabel} · E${g.number}` : `E${g.number}`)}
             {g.runtime ? ` · ${bidiIsolate(t("{n} min", { n: g.runtime }))}` : ""}
-            {formatAirDate(g.airDate) ? ` · ${bidiIsolate(formatAirDate(g.airDate))}` : ""}
+            {airDate ? ` · ${bidiIsolate(airDate)}` : ""}
           </span>
           {settings.showEpisodeDescription && g.overview && (
             <p

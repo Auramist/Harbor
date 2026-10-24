@@ -24,6 +24,7 @@ import type { Settings } from "@/lib/settings";
 // never kept at all.
 const ENTRY_CACHE_TTL_MS = 5 * 60 * 1000;
 const cache = new Map<string, { at: number; promise: Promise<KitsuEpisode[]> }>();
+const inflight = new Map<string, Promise<KitsuEpisode[]>>();
 
 function isPlayable(ep: KitsuEpisode): boolean {
   if (ep.streamId) return true;
@@ -34,7 +35,9 @@ export function fetchEntryEpisodes(kitsuId: number, settings: Settings): Promise
   const lang = tvdbLangFromIso1(settings.tmdbLanguage || settings.uiLanguage);
   const iso1 = settings.tmdbLanguage || settings.uiLanguage || "en";
   const localized = iso1.split("-")[0]?.toLowerCase() !== "en";
-  const cacheKey = `${kitsuId}:${iso1}:v2`;
+  const cacheKey = JSON.stringify([kitsuId, iso1, settings.tmdbKey ?? "", settings.tvdbKey ?? ""]);
+  const shared = inflight.get(cacheKey);
+  if (shared) return shared;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < ENTRY_CACHE_TTL_MS) return cached.promise;
   const p = (async () => {
@@ -132,9 +135,21 @@ export function fetchEntryEpisodes(kitsuId: number, settings: Settings): Promise
     return out;
   })();
   const entry = { at: Date.now(), promise: p };
-  cache.set(cacheKey, entry);
-  void p.catch(() => {
-    if (cache.get(cacheKey) === entry) cache.delete(cacheKey);
-  });
+  inflight.set(cacheKey, p);
+  void p
+    .then(
+      (episodes) => {
+        // Empty results can be transient provider failures. Do not keep them for
+        // five minutes or let a long session retain every visited franchise.
+        if (episodes.length > 0) {
+          entry.at = Date.now();
+          cache.delete(cacheKey);
+          cache.set(cacheKey, entry);
+          while (cache.size > 32) cache.delete(cache.keys().next().value!);
+        }
+      },
+      () => {},
+    )
+    .finally(() => inflight.delete(cacheKey));
   return p;
 }

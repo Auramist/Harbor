@@ -1,10 +1,13 @@
+import { useHarborEpisodeRatings } from "@/views/detail/use-episode-imdb-ratings";
+import { withEpisodeImdbRatings } from "@/lib/providers/anime-episode-enrich";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Meta } from "@/lib/cinemeta";
 import { useAnilistWatched } from "@/lib/anilist/use-anilist-watched";
 import type { EpisodeProgress } from "@/lib/episode-progress";
 import { useMalWatched } from "@/lib/mal/use-mal-watched";
 import { manualWatchedVersion, subscribeManualWatched } from "@/lib/manual-watched";
-import { animeDetails, type AnimeDetailExtras } from "@/lib/providers/anime-detail";
+import { animeDetails } from "@/lib/providers/anime-detail";
+import { mergeAnimeDetailExtras } from "@/lib/providers/anime-detail-extras";
 import { parseKitsuId, type KitsuEpisode, type KitsuStreamer } from "@/lib/providers/kitsu";
 import type { TmdbDetail } from "@/lib/providers/tmdb";
 import type { TvdbOrderType, TvdbSeasonTypeOption } from "@/lib/providers/tvdb";
@@ -82,16 +85,6 @@ export function bpAnimePlayEpisode(ep: KitsuEpisode): PlayEpisode {
   };
 }
 
-function mergeExtras(base: TmdbDetail, patch: AnimeDetailExtras): TmdbDetail {
-  const out: Record<string, unknown> = { ...base };
-  for (const [key, value] of Object.entries(patch)) {
-    if (value == null) continue;
-    if (Array.isArray(value) && value.length === 0) continue;
-    out[key] = value;
-  }
-  return out as TmdbDetail;
-}
-
 type Loaded = {
   key: string;
   detail: TmdbDetail;
@@ -153,17 +146,16 @@ export function useBpAnimeDetail(meta: Meta | null, opts?: BpAnimeDetailOptions)
             if (!alive) return;
             patch((prev) => ({
               ...prev,
-              detail: mergeExtras(prev.detail, extras),
+              detail: mergeAnimeDetailExtras(prev.detail, extras),
               imdbId: extras.imdbId ?? prev.imdbId,
             }));
           })
           .catch(NOOP);
-        // enrichEpisodes fills thumbnails and fillers by mutating the array it
-        // was handed, so a copy is the only thing that tells React anything moved.
+        // The provider publishes one completed enrichment snapshot.
         void res.enrichPromise
           .then((eps) => {
             if (!alive) return;
-            patch((prev) => ({ ...prev, episodes: [...eps] }));
+            patch((prev) => (prev.episodes === eps ? prev : { ...prev, episodes: eps }));
           })
           .catch(NOOP);
       })
@@ -269,9 +261,18 @@ export function useBpAnimeDetail(meta: Meta | null, opts?: BpAnimeDetailOptions)
     settings.tvdbKey,
     preferredSeasonKey ?? undefined,
     intentSeasonKey ?? undefined,
+    false,
+    orderOn && !tvdb.active,
   );
 
-  const visible = tvdb.panel ? tvdb.panel.visibleEpisodes : (order?.visibleEpisodes ?? episodes);
+  const ratings = useHarborEpisodeRatings(isAnime ? imdbId : null);
+  const unratedVisible = tvdb.panel
+    ? tvdb.panel.visibleEpisodes
+    : (order?.visibleEpisodes ?? episodes);
+  const visible = useMemo(
+    () => withEpisodeImdbRatings(unratedVisible, ratings),
+    [unratedVisible, ratings],
+  );
   const proxyImages = useTvdbProxyImages(kitsuId, imdbId, episodes.length, settings.tvdbSeasonType);
   const shown = useMemo(() => {
     // The TVDB order can still say "TBA" for an episode that already aired while

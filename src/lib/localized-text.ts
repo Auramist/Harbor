@@ -65,10 +65,7 @@ export function pickLocalizedText(
     if (forName && isGenericEpisodeName(text)) continue;
     const rank = candidate.rank ?? rankLocalizedText(text, lang);
     const score =
-      candidate.score ??
-      (forName
-        ? (isGenericEpisodeName(text) ? -1 : 0) + Math.min(text.length, 60)
-        : Math.min(text.length, 200));
+      candidate.score ?? (forName ? Math.min(text.length, 60) : Math.min(text.length, 200));
     if (best == null || rank > best.rank || (rank === best.rank && score > best.score)) {
       best = { text, rank, score };
     }

@@ -4,6 +4,7 @@ import { registerEvictable } from "@/lib/maintenance";
 import { safeFetch } from "@/lib/safe-fetch";
 import { adultContentHidden } from "@/lib/addons-store/adult-filter";
 import { episodeTextLanguage } from "@/lib/episode-text-language";
+import { createRequestScheduler } from "@/lib/request-scheduler";
 
 const KITSU = "https://kitsu.io/api/edge";
 
@@ -59,10 +60,12 @@ type Resource<T> = {
     { data?: { id: string; type: string } | Array<{ id: string; type: string }> }
   >;
 };
-type Doc<D, I = unknown> = { data: D; included?: Resource<I>[] };
+type Doc<D, I = unknown> = { data: D; included?: Resource<I>[]; meta?: { count?: number } };
 
 const cache = new Map<string, { v: unknown; t: number }>();
 const TTL = 30 * 60 * 1000;
+const CACHE_MAX = 300;
+const requests = createRequestScheduler({ concurrency: 4 });
 
 registerEvictable("kitsu", (aggressive) => {
   if (aggressive) return cache.clear();
@@ -74,15 +77,21 @@ async function get<T>(path: string): Promise<T | null> {
   const url = `${KITSU}${path}`;
   const hit = cache.get(url);
   if (hit && Date.now() - hit.t < TTL) return hit.v as T;
-  try {
-    const r = await safeFetch(url, { headers: { Accept: "application/vnd.api+json" } });
-    if (!r.ok) return null;
-    const j = (await r.json()) as T;
-    cache.set(url, { v: j, t: Date.now() });
-    return j;
-  } catch {
-    return null;
-  }
+  return requests.schedule(url, async () => {
+    try {
+      const r = await safeFetch(url, {
+        headers: { Accept: "application/vnd.api+json" },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (r.status === 429) requests.pauseFor(1000);
+      if (!r.ok) return null;
+      const j = (await r.json()) as T;
+      lruSet(cache, url, { v: j, t: Date.now() }, CACHE_MAX);
+      return j;
+    } catch {
+      return null;
+    }
+  });
 }
 
 export type KitsuEpisode = {
@@ -345,13 +354,46 @@ export async function kitsuStreamingLinks(id: number): Promise<KitsuStreamer[]> 
 
 export async function kitsuEpisodes(id: number, limit = 60): Promise<KitsuEpisode[]> {
   const PAGE = 20;
-  const out: KitsuEpisode[] = [];
-  for (let offset = 0; offset < limit; offset += PAGE) {
-    const size = Math.min(PAGE, limit - offset);
-    const j = await get<Doc<Resource<KitsuEpisodeAttrs>[]>>(
-      `/anime/${id}/episodes?page[limit]=${size}&page[offset]=${offset}&sort=number`,
+  if (!Number.isFinite(limit) || limit <= 0) return [];
+  limit = Math.floor(limit);
+  const page = (offset: number) =>
+    get<Doc<Resource<KitsuEpisodeAttrs>[]>>(
+      `/anime/${id}/episodes?page[limit]=${Math.min(PAGE, limit - offset)}&page[offset]=${offset}&sort=number`,
     );
-    if (!j?.data?.length) break;
+  const first = await page(0);
+  if (!first?.data?.length) return [];
+  const pages = [first];
+  const count = first.meta?.count;
+  const total =
+    typeof count === "number" && Number.isFinite(count) && count >= 0
+      ? Math.min(limit, count)
+      : limit;
+  // Fetch later pages in bounded waves. The count avoids probing beyond short
+  // series, while a short or failed page always stops the returned prefix.
+  if (first.data.length === Math.min(PAGE, limit)) {
+    for (let offset = PAGE; offset < total; offset += 3 * PAGE) {
+      const offsets = Array.from({ length: 3 }, (_, i) => offset + i * PAGE).filter(
+        (n) => n < total,
+      );
+      const batch = await Promise.all(offsets.map(page));
+      let complete = true;
+      for (let i = 0; i < batch.length; i++) {
+        const value = batch[i];
+        if (!value?.data) {
+          complete = false;
+          break;
+        }
+        pages.push(value);
+        if (value.data.length < Math.min(PAGE, limit - offsets[i])) {
+          complete = false;
+          break;
+        }
+      }
+      if (!complete) break;
+    }
+  }
+  const out: KitsuEpisode[] = [];
+  for (const j of pages) {
     for (const ep of j.data) {
       const a = ep.attributes;
       out.push({
@@ -367,9 +409,8 @@ export async function kitsuEpisodes(id: number, limit = 60): Promise<KitsuEpisod
         length: a.length ?? null,
       });
     }
-    if (j.data.length < size) break;
   }
-  return out;
+  return out.sort((a, b) => a.number - b.number).slice(0, limit);
 }
 
 type AnimeCharAttrs = { role?: string };

@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -30,8 +31,6 @@ import type { KitsuEpisode, KitsuStreamer } from "@/lib/providers/kitsu";
 import { AnimeAwardsBlock } from "@/components/anime-awards-block";
 import { AwardsBlock } from "@/components/awards-block";
 import { BackToTop } from "@/components/back-to-top";
-import { PickCard } from "@/components/pick-card";
-import { Row } from "@/components/row";
 import {
   meta as fetchCinemetaMeta,
   narrowMediaType,
@@ -71,6 +70,7 @@ import {
 } from "@/lib/stremio";
 import { decodeWatchedEpisodes, stremioMovieWatched } from "@/lib/stremio-watched";
 import { setEpisodesWatchedStremio } from "@/lib/stremio-watched-sync";
+import { mergeAnimeDetailExtras } from "@/lib/providers/anime-detail-extras";
 import { useHideAnimeMetas } from "@/lib/anime-hide";
 import {
   isMovieWatchedLocal,
@@ -156,7 +156,12 @@ import { usePlayOnTrigger } from "@/components/play-on-trigger";
 import { UpcomingCta } from "./detail/upcoming-cta";
 import { MovieReleaseCountdowns } from "./detail/movie-release-countdowns";
 import { Synopsis } from "./detail/synopsis";
-import { CastCard } from "./detail/cast-card";
+import {
+  DetailCastRail,
+  DetailCharacterRail,
+  DetailProviderCastRail,
+  DetailRecommendationRail,
+} from "./detail/media-rails";
 import { UiIcon } from "@/components/ui-icon";
 import { HeroActionOverflow, useHeroActionOverflow } from "./detail/hero-action-overflow";
 import { useTvdbCastFallback } from "./detail/use-tvdb-cast-fallback";
@@ -178,7 +183,6 @@ import { AnimeAiringBanner } from "./detail/anime-airing-banner";
 import { AnimeStatsDonut } from "./detail/anime-stats-donut";
 import { AnimeRelatedRail } from "./detail/anime-related-rail";
 import { MangaAwardCorner } from "./manga/collection-badge";
-import { CharacterCard } from "./detail/character-card";
 import { useAnimeAnilistDetails } from "./detail/use-anime-anilist-details";
 import { useAnimeCharacters } from "./detail/use-anime-characters";
 import { TraktComments } from "./detail/trakt-comments";
@@ -283,10 +287,12 @@ export function DetailView({
       }
       seasonEntryRef.current = sel.entryId;
       const cachedLogo = peekAnimeArt(sel.entryId)?.logo;
-      setSeasonArt({
-        background: sel.background,
-        description: sel.description,
-        logo: cachedLogo ?? sel.logo,
+      startTransition(() => {
+        setSeasonArt({
+          background: sel.background,
+          description: sel.description,
+          logo: cachedLogo ?? sel.logo,
+        });
       });
       if (!cachedLogo && sel.name) {
         const entryId = sel.entryId;
@@ -297,7 +303,7 @@ export function DetailView({
         )
           .then((u) => {
             if (u && seasonEntryRef.current === entryId) {
-              setSeasonArt((p) => (p ? { ...p, logo: u } : p));
+              startTransition(() => setSeasonArt((p) => (p ? { ...p, logo: u } : p)));
             }
           })
           .catch(() => {});
@@ -962,6 +968,7 @@ export function DetailView({
     const lookup = capstanCanonicalId
       ? { ...meta, id: capstanCanonicalId, type: capstanMeta?.kind ?? meta.type }
       : meta;
+    let applyAnimeExtras: (() => void) | undefined;
     const work = isAnime
       ? animeDetails(
           settingsRef.current,
@@ -989,7 +996,7 @@ export function DetailView({
             .catch(() => {});
           void res.enrichPromise
             .then((eps) => {
-              if (!cancelled) setAnimeEpisodes([...eps]);
+              if (!cancelled) setAnimeEpisodes(eps);
             })
             .catch(() => {});
           void res.heroBgPromise
@@ -999,17 +1006,21 @@ export function DetailView({
               saveAnimeArt(meta.id, { bg });
             })
             .catch(() => {});
-          void res.extrasPromise
-            .then((patch) => {
-              if (cancelled) return;
-              setDetail((prev) => (prev ? { ...prev, ...patch } : prev));
-              if (patch.gallery?.backdrops?.length) setBackdrops(patch.gallery.backdrops);
-              saveAnimeArt(meta.id, {
-                logo: patch.logo,
-                backdrops: patch.gallery?.backdrops,
-              });
-            })
-            .catch(() => {});
+          // Install the base detail before subscribing: on a warm cache this
+          // promise can settle before the shared work.then below runs.
+          applyAnimeExtras = () => {
+            void res.extrasPromise
+              .then((patch) => {
+                if (cancelled) return;
+                setDetail((prev) => (prev ? mergeAnimeDetailExtras(prev, patch) : prev));
+                if (patch.gallery?.backdrops?.length) setBackdrops(patch.gallery.backdrops);
+                saveAnimeArt(meta.id, {
+                  logo: patch.logo,
+                  backdrops: patch.gallery?.backdrops,
+                });
+              })
+              .catch(() => {});
+          };
           setAnimeCanonicalId(`kitsu:${res.kitsuId}`);
           setStreamers(res.streamers);
           setBackdrops(res.backdrops);
@@ -1058,6 +1069,7 @@ export function DetailView({
           return d;
         });
         setLoading(false);
+        applyAnimeExtras?.();
       })
       .catch(() => {
         if (cancelled) return;
@@ -1348,22 +1360,36 @@ export function DetailView({
     }
     return stremioIdToTraktTarget(meta.id);
   }, [meta.id, isSeries, isAnime, detail?.imdbId, detail?.id, detail?.kind]);
-  const playMeta: Meta = {
-    ...meta,
-    name: title,
-    // The stream request is typed from this, and for a native addon it is passed through whole
-    // (`episode-pipeline-input.ts:77`). The catalogue types a row from the first type its provider
-    // declares, so a provider carrying both movies and series has its series asked for as a movie
-    // -- and the episode branch is then never reached, which is a silent zero streams. The
-    // provider's own word is the one that decides.
-    type: capstanMeta ? capstanMeta.kind : meta.type,
-    logo,
-    background: backdrop,
-    releaseDate: detail?.releaseDate ?? meta.releaseDate,
-    releaseInfo: detail?.year ?? meta.releaseInfo ?? cinemetaFull?.releaseInfo,
-    behaviorHints: meta.behaviorHints ?? cinemetaFull?.behaviorHints,
-    videos: meta.videos ?? cinemetaFull?.videos,
-  };
+  const playMeta = useMemo<Meta>(
+    () => ({
+      ...meta,
+      name: title,
+      // The stream request is typed from this, and for a native addon it is passed through whole
+      // (`episode-pipeline-input.ts:77`). The catalogue types a row from the first type its provider
+      // declares, so a provider carrying both movies and series has its series asked for as a movie
+      // -- and the episode branch is then never reached, which is a silent zero streams. The
+      // provider's own word is the one that decides.
+      type: capstanMeta ? capstanMeta.kind : meta.type,
+      logo,
+      background: backdrop,
+      releaseDate: detail?.releaseDate ?? meta.releaseDate,
+      releaseInfo: detail?.year ?? meta.releaseInfo ?? cinemetaFull?.releaseInfo,
+      behaviorHints: meta.behaviorHints ?? cinemetaFull?.behaviorHints,
+      videos: meta.videos ?? cinemetaFull?.videos,
+    }),
+    [
+      meta,
+      title,
+      capstanMeta?.kind,
+      logo,
+      backdrop,
+      detail?.releaseDate,
+      detail?.year,
+      cinemetaFull?.releaseInfo,
+      cinemetaFull?.behaviorHints,
+      cinemetaFull?.videos,
+    ],
+  );
 
   useEffect(() => {
     if (!isAnime) return;
@@ -2459,13 +2485,7 @@ export function DetailView({
               key: "cast",
               label: t("Cast"),
               minHeight: 240,
-              node: (
-                <Row title={t("Cast · {n}", { n: detail.cast.length })} min={128}>
-                  {detail.cast.map((c, i) => (
-                    <CastCard key={`${c.id}-${i}`} cast={c} />
-                  ))}
-                </Row>
-              ),
+              node: <DetailCastRail cast={detail.cast} />,
             });
           }
           if (capstanMeta && capstanMeta.cast.length > 0 && !(detail && detail.cast.length > 0)) {
@@ -2473,19 +2493,7 @@ export function DetailView({
               key: "cast",
               label: t("Cast"),
               minHeight: 240,
-              node: (
-                <Row title={t("Cast · {n}", { n: capstanMeta.cast.length })} min={128}>
-                  {capstanMeta.cast.map((name, i) => (
-                    <CastCard
-                      key={`${name}-${i}`}
-                      // The provider names people and nothing else: no id to open and no photo, so
-                      // the card falls back to its own placeholder exactly as it does for an
-                      // unresolved TMDB credit.
-                      cast={{ id: 0, name, character: "", profilePath: null, order: i }}
-                    />
-                  ))}
-                </Row>
-              ),
+              node: <DetailProviderCastRail cast={capstanMeta.cast} />,
             });
           }
           if (isAnime && animeCharacters.length > 0) {
@@ -2493,13 +2501,7 @@ export function DetailView({
               key: "animeCharacters",
               label: t("Characters"),
               minHeight: 240,
-              node: (
-                <Row title={t("Characters · {n}", { n: animeCharacters.length })} min={128}>
-                  {animeCharacters.map((c) => (
-                    <CharacterCard key={c.id} character={c} />
-                  ))}
-                </Row>
-              ),
+              node: <DetailCharacterRail characters={animeCharacters} />,
             });
           }
           if (detail?.collection) {
@@ -2514,16 +2516,11 @@ export function DetailView({
               key: "moreLikeThis",
               label: t("More Like This"),
               node: (
-                <Row title={t("More Like This")}>
-                  {reasonedRecommendations.map((r) => (
-                    <PickCard
-                      key={r.id}
-                      meta={r}
-                      reason={graphReasons.get(r.id)?.label}
-                      reasonDetail={graphReasons.get(r.id)?.detail}
-                    />
-                  ))}
-                </Row>
+                <DetailRecommendationRail
+                  title={t("More Like This")}
+                  items={reasonedRecommendations}
+                  reasons={graphReasons}
+                />
               ),
             });
           }
@@ -2536,11 +2533,10 @@ export function DetailView({
               key: "moreLikeThis",
               label: t("More Like This"),
               node: (
-                <Row title={t("More Like This")}>
-                  {capstanMeta.recommendations.map((r) => (
-                    <PickCard key={r.id} meta={r} />
-                  ))}
-                </Row>
+                <DetailRecommendationRail
+                  title={t("More Like This")}
+                  items={capstanMeta.recommendations}
+                />
               ),
             });
           }
@@ -2549,16 +2545,11 @@ export function DetailView({
               key: "similar",
               label: t("You Might Also Like"),
               node: (
-                <Row title={t("You Might Also Like")}>
-                  {reasonedSimilar.map((r) => (
-                    <PickCard
-                      key={`s-${r.id}`}
-                      meta={r}
-                      reason={graphReasons.get(r.id)?.label}
-                      reasonDetail={graphReasons.get(r.id)?.detail}
-                    />
-                  ))}
-                </Row>
+                <DetailRecommendationRail
+                  title={t("You Might Also Like")}
+                  items={reasonedSimilar}
+                  reasons={graphReasons}
+                />
               ),
             });
           }

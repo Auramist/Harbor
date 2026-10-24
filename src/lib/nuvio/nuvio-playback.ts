@@ -1,5 +1,6 @@
 import {
   pullWatchProgressFromNuvio,
+  isNuvioProviderActive,
   readCachedWatchProgress,
   resolveNuvioProfileIndex,
 } from "./nuvio-sync";
@@ -153,14 +154,16 @@ export function buildNuvioPlaybackItems(
       const remoteT = r.last_watched || Date.parse(when) || 0;
 
       // Prefer newer local playback offset if available
-      const existing = readResumeEntry(contentId);
+      const existing = readResumeEntry(contentId, undefined, undefined, ownerId);
       if (existing && existing.t > remoteT && existing.ms > 0) {
         offsetMs = existing.ms;
       }
 
       // Filter out movies that are finished (> 92%) or barely started (< 5 seconds)
       if (durMs > 0 && offsetMs / durMs >= 0.92) {
-        setMovieWatchedLocal(contentId, true);
+        if (isNuvioProviderActive() && profileIndex === resolveNuvioProfileIndex()) {
+          setMovieWatchedLocal(contentId, true);
+        }
         continue;
       }
       if (offsetMs < 5000 && durMs > 60000) continue;
@@ -248,7 +251,7 @@ export function buildNuvioPlaybackItems(
     const remoteT = latest.last_watched || Date.parse(when) || 0;
 
     // Check if local playback has a more recent position for the target episode
-    const existing = readResumeEntry(contentId, targetSeason, targetEpisode);
+    const existing = readResumeEntry(contentId, targetSeason, targetEpisode, ownerId);
     if (existing && existing.t > remoteT && existing.ms > 0) {
       targetOffsetMs = existing.ms;
       isUpNext = false;
@@ -381,6 +384,7 @@ export async function fetchNuvioPlaybackItems(targetSlot?: number): Promise<Libr
   if (!isNuvioSignedIn()) return [];
 
   const accountId = getNuvioAccountId();
+  const activeSlot = resolveNuvioProfileIndex();
   const profileIndex = targetSlot ?? resolveNuvioProfileIndex();
   let records: NuvioWatchProgress[] | null = null;
   try {
@@ -388,7 +392,13 @@ export async function fetchNuvioPlaybackItems(targetSlot?: number): Promise<Libr
   } catch {
     records = null;
   }
-  if (!isNuvioSignedIn() || getNuvioAccountId() !== accountId) return [];
+  if (
+    !isNuvioSignedIn() ||
+    !isNuvioProviderActive() ||
+    getNuvioAccountId() !== accountId ||
+    resolveNuvioProfileIndex() !== activeSlot
+  )
+    return [];
   // Only fall back to local disk cache if network threw an error (records === null)
   if (records === null) {
     records = readCachedWatchProgress(profileIndex);

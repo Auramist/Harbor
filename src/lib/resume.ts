@@ -1,6 +1,6 @@
 import type { ExternalCwSource } from "@/lib/stremio";
 import { privateCwProfileId } from "./cw-profile";
-import { isNuvioProviderActive as isNuvioMode } from "./active-profile-id";
+import { isNuvioProviderActive as isNuvioMode, getNuvioActiveSlot } from "./active-profile-id";
 
 const KEY = "harbor.resume";
 const PRIVATE_PREFIX = "harbor.resume.private.v1.";
@@ -26,30 +26,10 @@ function nuvioAccountId(): string {
   return "anon";
 }
 
-let cachedSlotRaw: string | null = null;
-let cachedNuvioSlot = 1;
-
-function nuvioActiveSlot(): number {
-  try {
-    const raw =
-      localStorage.getItem("harbor.nuvio.state.v1") || localStorage.getItem("harbor.nuvio.state");
-    if (raw === cachedSlotRaw) return cachedNuvioSlot;
-    cachedSlotRaw = raw;
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      cachedNuvioSlot =
-        typeof parsed.activeProfileIndex === "number" ? parsed.activeProfileIndex : 1;
-      return cachedNuvioSlot;
-    }
-  } catch {}
-  cachedNuvioSlot = 1;
-  return 1;
-}
-
 function effectiveOwner(ownerId?: string): string | undefined {
   if (ownerId && ownerId.startsWith("nuvio-")) return ownerId;
   if (isNuvioMode()) {
-    return `nuvio-${nuvioActiveSlot()}`;
+    return `nuvio-${getNuvioActiveSlot()}`;
   }
   return ownerId;
 }
@@ -206,6 +186,15 @@ export function readResumeEntry(
         ...(e.source !== undefined ? { source: e.source } : {}),
       }
     : null;
+}
+
+/** One synchronous episode scan reads its profile and storage snapshot once. */
+export function createResumeReader(ownerId?: string) {
+  const entries = { ...readAll(readKey(ownerId)) };
+  return (id: string, season?: number, episode?: number): ReturnType<typeof readResumeEntry> => {
+    const entry = entries[entryKey(id, season, episode)];
+    return entry ? { ...entry } : null;
+  };
 }
 
 export function readResumeSource(

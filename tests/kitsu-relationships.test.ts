@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 // @ts-expect-error Node test types are outside the browser tsconfig.
 import test from "node:test";
 import ts from "typescript";
+import { createRequestScheduler } from "../src/lib/request-scheduler.ts";
 import { isOrphanAnimeCandidate } from "../src/lib/anime-detect.ts";
 
 test("isOrphanAnimeCandidate excludes western animation and requires East Asian origin", () => {
@@ -141,7 +142,11 @@ test("kitsuMainTvSeries only follows parent_story or full_story, ignoring spinof
   ).outputText;
 
   const exportsObj: { kitsuMainTvSeries?: (id: number) => Promise<number | null> } = {};
-  new Function("require", "exports", code)((id: string) => mocks[id] ?? {}, exportsObj);
+  new Function("require", "exports", code)(
+    (id: string) =>
+      id === "@/lib/request-scheduler" ? { createRequestScheduler } : (mocks[id] ?? {}),
+    exportsObj,
+  );
 
   const { kitsuMainTvSeries } = exportsObj;
   assert.ok(typeof kitsuMainTvSeries === "function");

@@ -163,6 +163,38 @@ async function enrichTvdbThumbs(
   }
 }
 
+function episodeImdbRating(
+  ep: KitsuEpisode,
+  ratings: ReadonlyMap<string, number>,
+): number | undefined {
+  const season = ep.imdbSeason ?? ep.seasonNumber ?? 1;
+  const num = ep.imdbEpisode ?? ep.number;
+  return (
+    ratings.get(`${season}:${num}`) ??
+    (ep.absoluteNumber != null ? ratings.get(`1:${ep.absoluteNumber}`) : undefined)
+  );
+}
+
+export function withEpisodeImdbRatings(
+  episodes: KitsuEpisode[],
+  ratings: ReadonlyMap<string, number>,
+): KitsuEpisode[] {
+  if (ratings.size === 0) return episodes;
+  const unaired = unairedIndexes(episodes);
+  let changed = false;
+  const out = episodes.map((ep, i) => {
+    // Early addon rows may still carry cour-local numbering. Wait for mapped
+    // coordinates before displaying a series rating on those rows.
+    if (unaired.has(i) || ep.imdbSeason == null || ep.imdbEpisode == null) return ep;
+    const rating = episodeImdbRating(ep, ratings);
+    if (rating == null || !Number.isFinite(rating) || rating <= 0 || rating > 10) return ep;
+    if (ep.rating === rating && ep.ratingIsImdb) return ep;
+    changed = true;
+    return { ...ep, rating, ratingIsImdb: true };
+  });
+  return changed ? out : episodes;
+}
+
 async function enrichHarborImdb(episodes: KitsuEpisode[], imdbId: string | null): Promise<void> {
   if (!imdbId || !imdbId.startsWith("tt")) return;
   const map = await harborImdbEpisodes(imdbId).catch(() => null);
@@ -172,15 +204,7 @@ async function enrichHarborImdb(episodes: KitsuEpisode[], imdbId: string | null)
     // Unaired episodes have no IMDb rating; a hit here is a mis-keyed rating
     // from another episode.
     if (unaired.has(i)) continue;
-    const season = ep.imdbSeason ?? ep.seasonNumber ?? 1;
-    const num = ep.imdbEpisode ?? ep.number;
-    let real = map.get(`${season}:${num}`);
-    if (real == null) {
-      const abs = ep.absoluteNumber;
-      if (abs != null) {
-        real = map.get(`1:${abs}`);
-      }
-    }
+    const real = episodeImdbRating(ep, map);
     if (real != null && real > 0) {
       ep.rating = real;
       ep.ratingIsImdb = true;

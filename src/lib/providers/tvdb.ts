@@ -141,7 +141,7 @@ registerCache("tvdb:response", () => responseCache.size);
 
 async function getJson<T>(apiKey: string, path: string): Promise<T | null> {
   const useProxy = !apiKey;
-  const key = `${useProxy ? "proxy" : apiKey.slice(0, 6)}::${path}`;
+  const key = JSON.stringify([apiKey, path]);
   const hit = responseCache.get(key);
   if (hit && Date.now() - hit.t < RESPONSE_TTL_MS) return hit.v as T;
   const existing = responseInflight.get(key);
@@ -346,7 +346,7 @@ export async function tvdbSeasons(
       name,
       overview,
       overviewLanguage,
-      image: tvdbImg(s.image),
+      image: pickSeasonPoster({ baseImage: s.image }),
     });
   }
   return map;
@@ -417,6 +417,7 @@ export async function tvdbSeasonNames(
 }
 
 export type TvdbSeasonArtwork = {
+  seasonId?: number | null;
   width?: number | null;
   height?: number | null;
   image?: unknown;
@@ -426,6 +427,22 @@ export type TvdbSeasonArtwork = {
   score?: number | null;
   includesText?: boolean | null;
 };
+
+/** The proxy exposes season posters through series artwork, scoped by season ID. */
+export async function tvdbSeriesSeasonArtwork(
+  apiKey: string,
+  seriesId: number,
+  seasonId: number,
+): Promise<TvdbSeasonArtwork[]> {
+  if (!seriesId || !seasonId) return [];
+  const data = await getJson<{ artworks?: TvdbSeasonArtwork[] }>(
+    apiKey,
+    `/series/${seriesId}/extended`,
+  );
+  return (Array.isArray(data?.artworks) ? data.artworks : []).filter(
+    (art) => art && Number(art.seasonId) === seasonId && Number(art.type) === 7,
+  );
+}
 
 export async function tvdbSeasonExtended(
   apiKey: string,
@@ -452,6 +469,13 @@ function normArtLang(v: unknown): string {
   return (typeof v === "string" ? v : "").trim().toLowerCase();
 }
 
+function seasonPosterImage(image: unknown, width?: number | null, height?: number | null) {
+  const url = tvdbImg(image);
+  if (!url || /\/(?:backgrounds|fanart|icons|clearlogos?)\//i.test(url)) return undefined;
+  if (Number(width) > 0 && Number(height) > 0 && Number(width) >= Number(height)) return undefined;
+  return url;
+}
+
 /**
  * Pick a season poster in the requested metadata language, falling back to
  * English. TVDB artwork carries a 3-letter `language` (e.g. `fra`, `eng`)
@@ -468,7 +492,7 @@ export function pickSeasonPoster(opts: {
 }): string | undefined {
   const langNorm = normArtLang(opts.lang) || "eng";
   const candidates = (opts.artwork ?? []).filter(
-    (a) => a && [2, 7].includes(Number(a.type)) && typeof a.image === "string" && a.image,
+    (a) => a && [2, 7].includes(Number(a.type)) && seasonPosterImage(a.image, a.width, a.height),
   );
   // Prefer true season posters. Type 2 is a series poster, so it should only
   // stand in when TVDB has no season artwork at all.
@@ -489,7 +513,11 @@ export function pickSeasonPoster(opts: {
   if (typeof textlessHit === "string" && textlessHit) return tvdbImg(textlessHit);
   const neutralHit = posters.find((a) => !normArtLang(a.language))?.image;
   if (typeof neutralHit === "string" && neutralHit) return tvdbImg(neutralHit);
-  return tvdbImg(opts.extendedImage) ?? tvdbImg(opts.baseImage) ?? tvdbImg(posters[0]?.image);
+  return (
+    seasonPosterImage(opts.extendedImage) ??
+    seasonPosterImage(opts.baseImage) ??
+    tvdbImg(posters[0]?.image)
+  );
 }
 
 export async function tvdbEpisodes(

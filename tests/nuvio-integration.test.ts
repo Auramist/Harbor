@@ -5,7 +5,6 @@ import {
   loadNuvioState,
   saveNuvioState,
   getNuvioAccountId,
-  isNuvioSignedIn,
   refreshNuvioSession,
 } from "../src/lib/nuvio/nuvio-client";
 import {
@@ -22,12 +21,10 @@ import {
   writePendingDeletes,
   flushNuvioLibraryMutations,
   pullNuvioLibrarySnapshot,
-  pullNuvioLibraryDelta,
 } from "../src/lib/nuvio/nuvio-library";
 import {
   rememberNuvioPin,
   verifyNuvioPinLocally,
-  forgetNuvioPin,
   clearAllNuvioPinCaches,
   markNuvioProfileUnlocked,
   isNuvioProfileUnlocked,
@@ -52,7 +49,7 @@ import {
   clearCachedPlaybackItems,
 } from "../src/lib/nuvio/nuvio-playback";
 import { saveResumeMs, readResumeEntry, clearResume, clearAllNuvioResume } from "../src/lib/resume";
-import { saveLocalCw, listLocalCw, clearAllNuvioLocalCw, clearAllLocalCw } from "../src/lib/local-cw";
+import { saveLocalCw, listLocalCw, clearAllNuvioLocalCw } from "../src/lib/local-cw";
 import { signOutNuvio } from "../src/lib/nuvio/nuvio-auth";
 
 // Mock localStorage in node test environment
@@ -827,6 +824,7 @@ test("Review 4 Issue 2: In-flight library update to the same title preserves the
 
 test("Review 5 Issue 1: In-flight watch progress and library pulls discard responses if user switches accounts or signs out", async () => {
   mockStorage.clear();
+  mockStorage.set("harbor.account-provider", "nuvio");
 
   // Part 1: Watch progress pull under Account A; Account switches to Account B while in-flight
   saveNuvioState({
@@ -993,6 +991,7 @@ test("Review 5 Issue 1: In-flight watch progress and library pulls discard respo
 
 test("Discarded watch progress pull does not clear the next account's playback cache", async () => {
   mockStorage.clear();
+  mockStorage.set("harbor.account-provider", "nuvio");
   const account = (id: string) => ({
     session: {
       access_token: `tok-${id}`,
@@ -1084,16 +1083,28 @@ test("Nuvio watched snapshots page past 1000 and failed reads never prune local 
   const originalFetch = globalThis.fetch;
   let pages = 0;
   try {
-    globalThis.fetch = async (url: any, init?: any) => {
+    const all = [
+      ...Array.from({ length: 1000 }, (_, i) => ({
+        content_id: `tt-page-${i}`,
+        content_type: "movie",
+      })),
+      { content_id: "kitsu:12", season: 1, episode: 1001, content_type: "series" },
+    ];
+    globalThis.fetch = async (url: any) => {
       if (String(url).includes("sync_pull_watched_items")) {
-        const request = JSON.parse(String(init?.body ?? "{}"));
-        pages += 1;
-        const rows = request.p_page === 1
-          ? Array.from({ length: 1000 }, (_, i) => ({ content_id: `tt-page-${i}`, content_type: "movie" }))
-          : [{ content_id: "kitsu:12", season: 1, episode: 1001, content_type: "series" }];
-        return { ok: true, status: 200, json: async () => rows } as Response;
+        return { ok: true, status: 200, json: async () => all.slice(0, 1000) } as Response;
       }
-      throw new Error("Unexpected request");
+      const offset = Number(/[?&]offset=(\d+)/.exec(String(url))?.[1] ?? 0);
+      pages++;
+      const rows = all.slice(offset, offset + 1000);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => rows,
+        headers: new Headers({
+          "Content-Range": `${offset}-${offset + rows.length - 1}/${all.length}`,
+        }),
+      } as Response;
     };
     const items = await pullWatchedItemsFromNuvio(1);
     assert.equal(items?.length, 1001, "all pages should be collected");
@@ -1101,11 +1112,12 @@ test("Nuvio watched snapshots page past 1000 and failed reads never prune local 
 
     const key = "harbor.manualwatched.v1.nuvio.1";
     mockStorage.set(key, '["kitsu:12|1|200"]');
-    globalThis.fetch = async () => ({
-      ok: false,
-      status: 503,
-      json: async () => ({}),
-    }) as Response;
+    globalThis.fetch = async () =>
+      ({
+        ok: false,
+        status: 503,
+        json: async () => ({}),
+      }) as Response;
     assert.equal(await pullWatchedItemsFromNuvio(1), null);
     await reconcileNuvioWatched(1);
     assert.equal(mockStorage.get(key), '["kitsu:12|1|200"]');
@@ -1166,9 +1178,11 @@ test("simultaneous detail and home watched reconciliation shares one cloud snaps
   mockStorage.set("harbor.account-provider", "nuvio");
   saveNuvioState({
     session: {
-      access_token: "once-token", refresh_token: "once-refresh",
+      access_token: "once-token",
+      refresh_token: "once-refresh",
       expires_at: Math.floor(Date.now() / 1000) + 3600,
-      token_type: "bearer", user: { id: "singleflight-account" },
+      token_type: "bearer",
+      user: { id: "singleflight-account" },
     },
     profiles: [{ id: "p1", name: "Main", profile_index: 1, user_id: "singleflight-account" }],
     activeProfileIndex: 1,
@@ -1176,19 +1190,26 @@ test("simultaneous detail and home watched reconciliation shares one cloud snaps
   });
   const originalFetch = globalThis.fetch;
   let finish!: (response: Response) => void;
-  const pending = new Promise<Response>((resolve) => { finish = resolve; });
+  const pending = new Promise<Response>((resolve) => {
+    finish = resolve;
+  });
   let calls = 0;
   try {
-    globalThis.fetch = async () => { calls += 1; return pending; };
+    globalThis.fetch = async () => {
+      calls += 1;
+      return pending;
+    };
     const fromHome = reconcileNuvioWatched();
     const fromDetail = reconcileNuvioWatched();
     assert.strictEqual(fromHome, fromDetail);
     finish({
-      ok: true, status: 200,
+      ok: true,
+      status: 200,
+      headers: new Headers({ "Content-Range": "0-0/1" }),
       json: async () => [{ content_id: "tt-one", content_type: "movie" }],
     } as Response);
     await Promise.all([fromHome, fromDetail]);
-    assert.equal(calls, 1);
+    assert.equal(calls, 2, "one RPC and one verified table snapshot are shared");
   } finally {
     globalThis.fetch = originalFetch;
   }

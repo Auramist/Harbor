@@ -234,15 +234,34 @@ export function manualWatchedState(
   episode: number,
   altIds?: Array<string | null | undefined>,
 ): boolean | undefined {
+  return stateInSets(watchedSet(), unwatchedSet(), metaId, season, episode, altIds);
+}
+
+/** Capture only for a synchronous scan; create a new reader after state changes. */
+export function createManualWatchedReader(): typeof manualWatchedState {
+  const watched = new Set(watchedSet());
+  const unwatched = new Set(unwatchedSet());
+  return (metaId, season, episode, altIds) =>
+    stateInSets(watched, unwatched, metaId, season, episode, altIds);
+}
+
+function stateInSets(
+  watched: Set<string>,
+  unwatched: Set<string>,
+  metaId: string,
+  season: number,
+  episode: number,
+  altIds?: Array<string | null | undefined>,
+): boolean | undefined {
   const k = key(metaId, season, episode);
-  if (watchedSet().has(k)) return true;
-  if (unwatchedSet().has(k)) return false;
+  if (watched.has(k)) return true;
+  if (unwatched.has(k)) return false;
   if (altIds && altIds.length > 0) {
     for (const alt of altIds) {
       if (!alt || alt === metaId) continue;
       const altK = key(alt, season, episode);
-      if (watchedSet().has(altK)) return true;
-      if (unwatchedSet().has(altK)) return false;
+      if (watched.has(altK)) return true;
+      if (unwatched.has(altK)) return false;
     }
   }
   return undefined;

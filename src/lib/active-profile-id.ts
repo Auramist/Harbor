@@ -93,7 +93,11 @@ export function getNuvioActiveSlot(): number {
     if (raw) {
       const parsed = JSON.parse(raw);
       cachedNuvioSlot =
-        typeof parsed.activeProfileIndex === "number" ? parsed.activeProfileIndex : 1;
+        Number.isInteger(parsed.activeProfileIndex) &&
+        parsed.activeProfileIndex >= 1 &&
+        parsed.activeProfileIndex <= 6
+          ? parsed.activeProfileIndex
+          : 1;
       return cachedNuvioSlot;
     }
   } catch {}

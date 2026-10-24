@@ -75,7 +75,19 @@ const EPISODE_NUMBER_WORDS = [
   "tập",
 ];
 
+const genericNames = new Map<string, boolean>();
+
 export function isGenericEpisodeName(text: string | null | undefined): boolean {
+  if (!text) return true;
+  const cached = genericNames.get(text);
+  if (cached !== undefined) return cached;
+  const result = computeGenericEpisodeName(text);
+  if (genericNames.size >= 4096) genericNames.delete(genericNames.keys().next().value!);
+  genericNames.set(text, result);
+  return result;
+}
+
+function computeGenericEpisodeName(text: string): boolean {
   if (!text) return false;
   const t = text.trim();
   if (!t) return false;
