@@ -270,8 +270,12 @@ export function useBpAnimeDetail(meta: Meta | null, opts?: BpAnimeDetailOptions)
     ? tvdb.panel.visibleEpisodes
     : (order?.visibleEpisodes ?? episodes);
   const visible = useMemo(
-    () => withEpisodeImdbRatings(unratedVisible, ratings),
-    [unratedVisible, ratings],
+    () =>
+      withEpisodeImdbRatings(unratedVisible, ratings, {
+        seriesMetaId: canonicalId,
+        seriesImdbId: imdbId,
+      }),
+    [unratedVisible, ratings, canonicalId, imdbId],
   );
   const proxyImages = useTvdbProxyImages(kitsuId, imdbId, episodes.length, settings.tvdbSeasonType);
   const shown = useMemo(() => {

@@ -140,6 +140,19 @@ pub struct ThumbCacheSize {
 }
 
 #[tauri::command]
+pub async fn cached_thumb_path(
+    app: tauri::AppHandle,
+    url: String,
+    width: u32,
+) -> Option<String> {
+    let app = app.clone();
+    tokio::task::spawn_blocking(move || crate::thumb_cache::cached_path(&app, &url, width))
+        .await
+        .ok()
+        .flatten()
+}
+
+#[tauri::command]
 pub async fn thumb_cache_size(app: tauri::AppHandle) -> Result<ThumbCacheSize, String> {
     let app = app.clone();
     let (bytes, files) =
@@ -414,6 +427,38 @@ pub struct HarborFetchResponse {
     pub url: Option<String>,
 }
 
+fn cached_image_response(
+    url: &str,
+    max_response_bytes: Option<u64>,
+    image: &crate::thumb_cache::CachedImage,
+    marker: &str,
+    max_age: u64,
+) -> Result<HarborFetchResponse, String> {
+    if max_response_bytes.is_some_and(|limit| image.bytes.len() as u64 > limit) {
+        return Err("response size limit exceeded".to_string());
+    }
+    Ok(HarborFetchResponse {
+        status: 200,
+        ok: true,
+        body: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
+        content_type: Some(image.content_type.clone()),
+        headers: HashMap::from([
+            ("content-type".to_string(), image.content_type.clone()),
+            ("x-harbor-image-cache".to_string(), marker.to_string()),
+            ("x-harbor-image-max-age".to_string(), max_age.to_string()),
+        ]),
+        url: Some(url.to_string()),
+    })
+}
+
+fn stale_image_response(
+    url: &str,
+    max_response_bytes: Option<u64>,
+    image: &crate::thumb_cache::CachedImage,
+) -> Result<HarborFetchResponse, String> {
+    cached_image_response(url, max_response_bytes, image, "stale", 300)
+}
+
 #[tauri::command]
 pub async fn harbor_fetch(
     app: tauri::AppHandle,
@@ -510,10 +555,10 @@ async fn harbor_fetch_inner(
         && subtitle_credential.is_none()
         && args.body.is_none()
         && args.body_base64.is_none()
-        && !headers.iter().any(|(name, _)| {
+        && headers.iter().all(|(name, _)| {
             matches!(
                 name.to_ascii_lowercase().as_str(),
-                "authorization" | "cookie" | "x-api-key"
+                "user-agent" | "accept" | "accept-language"
             )
         });
     let mut cached_image = None;
@@ -603,13 +648,23 @@ async fn harbor_fetch_inner(
             req = req.body(b.clone());
         }
 
-        let resp = req.send().await.map_err(|error| {
-            if subtitle_credential.is_some() {
-                "send: subtitle provider request failed".to_string()
-            } else {
-                format!("send: {error}")
+        let resp = match req.send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                // A previously cached image is still useful when the origin is
+                // unreachable; the old filesystem cache served it for 30 days.
+                if let Some(hit) = cached_image.as_ref() {
+                    if !hit.fresh {
+                        return stale_image_response(&args.url, args.max_response_bytes, hit);
+                    }
+                }
+                return Err(if subtitle_credential.is_some() {
+                    "send: subtitle provider request failed".to_string()
+                } else {
+                    format!("send: {error}")
+                });
             }
-        })?;
+        };
         let status = resp.status();
         if !follow_redirects || !is_followable_redirect(status) {
             break resp;
@@ -665,6 +720,13 @@ async fn harbor_fetch_inner(
 
     let status = res.status().as_u16();
     let ok = res.status().is_success();
+    if cache_image && (status >= 500 || status == 429 || status == 403) {
+        if let Some(hit) = cached_image.as_ref() {
+            if !hit.fresh {
+                return stale_image_response(&args.url, args.max_response_bytes, hit);
+            }
+        }
+    }
     let cf_mitigated = res
         .headers()
         .get("cf-mitigated")
@@ -677,7 +739,7 @@ async fn harbor_fetch_inner(
         .map(|s| s.to_string());
     let mut response_headers = collect_headers(res.headers());
     if status == 304 {
-        if let Some(mut hit) = cached_image {
+        if let Some(mut hit) = cached_image.take() {
             if args
                 .max_response_bytes
                 .is_some_and(|limit| hit.bytes.len() as u64 > limit)
@@ -766,18 +828,37 @@ async fn harbor_fetch_inner(
     let final_url = res.url().to_string();
     let body = if let Some(max_bytes) = args.max_response_bytes {
         if res.content_length().is_some_and(|size| size > max_bytes) {
+            if let Some(hit) = cached_image.as_ref() {
+                if !hit.fresh {
+                    return stale_image_response(&args.url, args.max_response_bytes, hit);
+                }
+            }
             return Err("response size limit exceeded".to_string());
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = res
-            .chunk()
-            .await
-            .map_err(|error| format!("read: {error}"))?
-        {
-            if (bytes.len() as u64).saturating_add(chunk.len() as u64) > max_bytes {
-                return Err("response size limit exceeded".to_string());
+        loop {
+            match res.chunk().await {
+                Ok(Some(chunk)) => {
+                    if (bytes.len() as u64).saturating_add(chunk.len() as u64) > max_bytes {
+                        if let Some(hit) = cached_image.as_ref() {
+                            if !hit.fresh {
+                                return stale_image_response(&args.url, args.max_response_bytes, hit);
+                            }
+                        }
+                        return Err("response size limit exceeded".to_string());
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    if let Some(hit) = cached_image.as_ref() {
+                        if !hit.fresh {
+                            return stale_image_response(&args.url, args.max_response_bytes, hit);
+                        }
+                    }
+                    return Err(format!("read: {error}"));
+                }
             }
-            bytes.extend_from_slice(&chunk);
         }
         if args.response_type.as_deref() == Some("base64") {
             thumb_or_base64(&app, &args.url, args.thumb_width_px, &bytes, persistence).await
@@ -789,7 +870,14 @@ async fn harbor_fetch_inner(
             Ok(bytes) => {
                 thumb_or_base64(&app, &args.url, args.thumb_width_px, &bytes, persistence).await
             }
-            Err(_) => String::new(),
+            Err(_) => {
+                if let Some(hit) = cached_image.as_ref() {
+                    if !hit.fresh {
+                        return stale_image_response(&args.url, args.max_response_bytes, hit);
+                    }
+                }
+                String::new()
+            }
         }
     } else {
         res.text().await.unwrap_or_default()
@@ -953,10 +1041,35 @@ fn cross_origin_redirect_forwards_body(cross_origin: bool, body: &Option<Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_redirect_method, cross_origin_redirect_forwards_body, host_is_blocked_literal,
-        is_https_downgrade, is_public_network_ip, same_origin, solver_host_allowed, strip_headers,
-        validate_target,
+        apply_redirect_method, cached_image_response, cross_origin_redirect_forwards_body,
+        host_is_blocked_literal, is_https_downgrade, is_public_network_ip, same_origin,
+        solver_host_allowed, validate_target,
     };
+    use crate::thumb_cache::CachedImage;
+
+    #[test]
+    fn stale_cached_image_response_honors_the_size_limit() {
+        let image = CachedImage {
+            bytes: b"abc".to_vec(),
+            content_type: "image/png".to_string(),
+            etag: None,
+            modified: None,
+            fresh: false,
+            max_age: 0,
+            lifetime: 60,
+        };
+        let response =
+            cached_image_response("https://example.com/a.png", Some(10), &image, "stale", 300)
+                .expect("stale response");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, "YWJj");
+        assert_eq!(
+            response.headers.get("x-harbor-image-cache").map(String::as_str),
+            Some("stale")
+        );
+        assert!(cached_image_response("https://example.com/a.png", Some(2), &image, "stale", 300)
+            .is_err());
+    }
 
     #[test]
     fn background_metadata_does_not_open_cloudflare_windows() {

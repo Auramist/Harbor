@@ -14,10 +14,10 @@ import {
   writeCachedWatchProgress,
 } from "../src/lib/nuvio/nuvio-sync";
 import type { NuvioWatchProgress } from "../src/lib/nuvio/nuvio-types";
-import { localCwEntry, saveLocalCw } from "../src/lib/local-cw";
+import { localCwEntry, saveLocalCw, saveLocalCwBatch } from "../src/lib/local-cw";
 import { buildNuvioPlaybackItems } from "../src/lib/nuvio/nuvio-playback";
 import { getNuvioActiveSlot } from "../src/lib/active-profile-id";
-import { readResumeEntry, saveResumeMs } from "../src/lib/resume";
+import { readResumeEntry, saveResumeBatch, saveResumeMs } from "../src/lib/resume";
 
 const storage = new Map<string, string>();
 globalThis.localStorage = {
@@ -536,5 +536,90 @@ test("a capped RPC batch cannot leave a successful deletion permanently unconfir
     assert.equal(tableCalls, 1);
     const key = `harbor.nuvio.pending-sync.v1.${accountId}.slot.1`;
     assert.equal(Object.keys(JSON.parse(storage.get(key)!)).length, 0);
+  });
+});
+
+test("a table snapshot that contradicts the RPC cannot erase local history", async () => {
+  await customSnapshot("rpc-table-conflict", async (accountId) => {
+    const previous = progress("conflict", 1, NOW - 1000);
+    writeCachedWatchProgress(1, [previous], accountId);
+    saveLocalCw(
+      {
+        id: previous.content_id,
+        type: "series",
+        name: "Conflict",
+        season: 1,
+        episode: 1,
+        positionMs: 120000,
+        durationMs: 1200000,
+        t: NOW - 1000,
+      },
+      "nuvio-1",
+    );
+    globalThis.fetch = async (url) =>
+      String(url).includes("/rpc/")
+        ? response([previous], 200, "0-0/1")
+        : response([], 200, "*/0");
+    const result = await pullWatchProgressFromNuvio(1);
+    assert.equal(result.some((row) => row.content_id === "conflict"), true);
+    assert.ok(localCwEntry("conflict", false, "nuvio-1"));
+    assert.equal(readCachedWatchProgress(1, accountId).length, 1);
+  });
+});
+
+test("a watched table that contradicts the RPC cannot clear watched flags", async () => {
+  await customSnapshot("watched-table-conflict", async () => {
+    storage.set("harbor.watchedFlag.nuvio.v1.1", JSON.stringify(["keep"]));
+    globalThis.fetch = async (url) =>
+      String(url).includes("/rpc/")
+        ? response([{ content_id: "keep", content_type: "movie" }], 200, "0-0/1")
+        : response([], 200, "*/0");
+    assert.equal(await pullWatchedItemsFromNuvio(1), null);
+    assert.deepEqual(JSON.parse(storage.get("harbor.watchedFlag.nuvio.v1.1")!), ["keep"]);
+  });
+});
+
+test("clearing a large history uses batched storage writes", async () => {
+  await customSnapshot("batched-clear", async (accountId) => {
+    const rows = Array.from({ length: 200 }, (_, i) => progress(`bulk-${i}`, 1, NOW));
+    writeCachedWatchProgress(1, rows, accountId);
+    saveLocalCwBatch(
+      rows.map((row) => ({
+        id: row.content_id,
+        type: "series" as const,
+        name: row.content_id,
+        season: row.season ?? undefined,
+        episode: row.episode ?? undefined,
+        positionMs: 120000,
+        durationMs: 1200000,
+        t: NOW,
+      })),
+      "nuvio-1",
+    );
+    saveResumeBatch(
+      rows.map((row) => ({
+        id: row.content_id,
+        ms: 120000,
+        season: row.season ?? undefined,
+        episode: row.episode ?? undefined,
+        t: NOW,
+      })),
+      "nuvio-1",
+    );
+    const original = globalThis.localStorage.setItem;
+    let writes = 0;
+    globalThis.localStorage.setItem = (key, value) => {
+      writes++;
+      original(key, value);
+    };
+    try {
+      globalThis.fetch = async () => response([], 200, "*/0");
+      assert.deepEqual(await pullWatchProgressFromNuvio(1), []);
+    } finally {
+      globalThis.localStorage.setItem = original;
+    }
+    assert.ok(writes < 10, `expected batched writes, saw ${writes}`);
+    assert.equal(localCwEntry("bulk-0", false, "nuvio-1"), null);
+    assert.equal(readResumeEntry("bulk-0", 1, 1, "nuvio-1"), null);
   });
 });

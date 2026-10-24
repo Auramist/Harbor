@@ -539,11 +539,13 @@ function PosterBody({
   // which would flash the shimmer even though the bytes are cached.
   useLayoutEffect(() => {
     if (exhausted) return;
-    if (current && decodedPosters.has(current)) {
+    // A decoded URL only skips the wait when this mount already has the blob
+    // src; otherwise the proxy is still loading and there is nothing to show yet.
+    if (current && currentSrc && decodedPosters.has(current)) {
       shownRef.current = current;
       rootRef.current?.setAttribute("data-loaded", "1");
     }
-  }, [current, exhausted]);
+  }, [current, currentSrc, exhausted]);
   const showShimmer = !exhausted;
   const showPlate = exhausted;
   const hue = hash(seed) % 360;

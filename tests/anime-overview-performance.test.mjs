@@ -338,7 +338,10 @@ function imageFixture(disk, invoke, now, failStorage = false) {
         },
         useEffect: (effect) => effects.push(effect),
       },
-      "@tauri-apps/api/core": { invoke },
+      "@tauri-apps/api/core": {
+        invoke,
+        convertFileSrc: (path) => `asset:${path}`,
+      },
       "@/lib/manga/sources/suwayomi/auth-registry": { suwayomiAuthFor: () => null },
       "@/lib/settings": { useSettings: () => ({ settings: { posterQuality: "high" } }) },
       "./object-url-cache": load("src/lib/object-url-cache.ts", {}, { Blob, URL: { createObjectURL: () => "blob:cached-image", revokeObjectURL() {} }, setTimeout, Date: { now } }),
@@ -382,13 +385,15 @@ test("public poster requests opt into the native persistent cache and clearing r
   const calls = [];
   const invoke = async (name, args) => {
     calls.push({ name, args });
+    if (name === "cached_thumb_path") return null;
     return { ok: true, body: "aW1hZ2U=", contentType: "image/jpeg" };
   };
   const first = imageFixture(disk, invoke, () => 1000);
   first.render("https://artworks.thetvdb.com/season.jpg");
   await tick();
-  assert.equal(calls[0].args.args.cacheImage, true);
-  assert.equal(calls[0].args.args.maxResponseBytes, 32 * 1024 * 1024);
+  const fetchCall = calls.find((call) => call.name === "harbor_fetch");
+  assert.equal(fetchCall.args.args.cacheImage, true);
+  assert.equal(fetchCall.args.args.maxResponseBytes, 32 * 1024 * 1024);
   assert.equal(disk.size, 1, "new images are stored by the native cache");
   await first.clearThumbCache();
   assert.equal(disk.size, 0);
@@ -399,7 +404,8 @@ test("unavailable poster storage falls back to fetching the image", async () => 
   let calls = 0;
   const f = imageFixture(
     new Map(),
-    async () => {
+    async (name) => {
+      if (name === "cached_thumb_path") return null;
       calls++;
       return { ok: true, body: "aW1hZ2U=", contentType: "image/jpeg" };
     },
@@ -410,6 +416,21 @@ test("unavailable poster storage falls back to fetching the image", async () => 
   await tick();
   assert.equal(calls, 1);
   assert.equal(f.render("https://artworks.thetvdb.com/season.jpg"), "blob:cached-image");
+});
+
+test("a fresh native image is served through the asset path without base64", async () => {
+  let fetchCalls = 0;
+  const invoke = async (name) => {
+    if (name === "cached_thumb_path") return "C:\\cache\\a.jpg";
+    fetchCalls++;
+    return { ok: true, body: "aW1hZ2U=", contentType: "image/jpeg" };
+  };
+  const f = imageFixture(new Map(), invoke, () => 1000);
+  const url = "https://artworks.thetvdb.com/season.jpg";
+  f.render(url);
+  await tick();
+  assert.equal(f.render(url), "asset:C:\\cache\\a.jpg");
+  assert.equal(fetchCalls, 0);
 });
 
 test("franchise pooling bounds concurrency and leaving stops queued entries", async () => {

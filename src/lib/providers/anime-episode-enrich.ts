@@ -178,11 +178,19 @@ function episodeImdbRating(
 export function withEpisodeImdbRatings(
   episodes: KitsuEpisode[],
   ratings: ReadonlyMap<string, number>,
+  options?: { seriesMetaId?: string | null; seriesImdbId?: string | null },
 ): KitsuEpisode[] {
   if (ratings.size === 0) return episodes;
   const unaired = unairedIndexes(episodes);
+  const seriesMetaId = options?.seriesMetaId ?? null;
+  const seriesImdbId = options?.seriesImdbId ?? null;
   let changed = false;
   const out = episodes.map((ep, i) => {
+    // Franchise lists can mix entries; a season/episode coordinate alone is not
+    // enough to know whose IMDb rating it belongs to.
+    if (seriesMetaId != null && ep.sourceMetaId != null && ep.sourceMetaId !== seriesMetaId)
+      return ep;
+    if (seriesImdbId != null && ep.imdbId != null && ep.imdbId !== seriesImdbId) return ep;
     // Early addon rows may still carry cour-local numbering. Wait for mapped
     // coordinates before displaying a series rating on those rows.
     if (unaired.has(i) || ep.imdbSeason == null || ep.imdbEpisode == null) return ep;

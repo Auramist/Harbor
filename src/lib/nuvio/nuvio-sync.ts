@@ -20,8 +20,16 @@ import type {
 import { reconcileNuvioWatchedFlags } from "@/lib/watched-flag";
 import { reconcileNuvioMovieWatched } from "@/lib/movie-watched";
 import { reconcileNuvioWatchedEpisodes } from "@/lib/manual-watched";
-import { clearLocalCw, listLocalCw, localCwEntry, saveLocalCw } from "@/lib/local-cw";
-import { clearResume, createResumeReader } from "@/lib/resume";
+import {
+  clearLocalCw,
+  clearLocalCwBatch,
+  listLocalCw,
+  localCwEntry,
+  saveLocalCw,
+  saveLocalCwBatch,
+  type LocalCwEntry,
+} from "@/lib/local-cw";
+import { clearResume, clearResumeBatch, createResumeReader } from "@/lib/resume";
 import { persistCritical } from "@/lib/storage-recovery";
 import { isNuvioProviderActive, getNuvioActiveSlot } from "@/lib/active-profile-id";
 import { readCachedNuvioPlaybackItems, writeCachedNuvioPlaybackItems } from "./nuvio-playback";
@@ -60,6 +68,11 @@ export function resolveNuvioProfileIndex(harborProfileId?: string | number): num
 }
 
 const WATCH_PROGRESS_CACHE_PREFIX = "harbor.nuvio.watch_progress.";
+// Full-table snapshots are the only way to confirm remote deletions, but they
+// are also the most expensive path. Routine pulls use the RPC batch; a full
+// snapshot is forced by a pending mutation or by this interval.
+const FULL_SYNC_INTERVAL_MS = 2 * 60_000;
+const lastFullSyncAt = new Map<string, number>();
 
 type NuvioCoordinate = { content_id: string; season?: number | null; episode?: number | null };
 type PendingChange = {
@@ -756,6 +769,7 @@ export async function markWatchedInNuvio(
  */
 export async function pullWatchedItemsFromNuvio(
   harborProfileId?: string | number,
+  options?: { force?: boolean },
 ): Promise<NuvioWatchedItem[] | null> {
   if (!isNuvioSignedIn() || !isNuvioProviderActive()) return null;
   const accountId = getNuvioAccountId();
@@ -766,6 +780,11 @@ export async function pullWatchedItemsFromNuvio(
     isNuvioProviderActive() &&
     getNuvioAccountId() === accountId &&
     resolveNuvioProfileIndex() === slot;
+  const fullSyncKey = `watched:${accountId}:${slot}`;
+  const lastFullSync = lastFullSyncAt.get(fullSyncKey) ?? 0;
+  if (!options?.force && lastFullSync && Date.now() - lastFullSync < FULL_SYNC_INTERVAL_MS)
+    return null;
+  let rpcRows: NuvioWatchedItem[] | null = null;
   let confirmedEmpty = false;
   try {
     const res = await nuvioFetch("/rest/v1/rpc/sync_pull_watched_items", {
@@ -776,19 +795,37 @@ export async function pullWatchedItemsFromNuvio(
     if (!stillCurrent()) return null;
     if (res.ok) {
       const rows: unknown = await res.json();
-      confirmedEmpty = Array.isArray(rows) && rows.length === 0;
+      if (Array.isArray(rows) && rows.every((row) => validRow(row, slot, accountId))) {
+        rpcRows = rows as NuvioWatchedItem[];
+        confirmedEmpty = rows.length === 0;
+      }
     }
   } catch {
     // A fallback may prove completeness through its count or terminal page.
   }
   try {
-    return await readTableSnapshot<NuvioWatchedItem>(
+    const table = await readTableSnapshot<NuvioWatchedItem>(
       "watched_items",
       slot,
       accountId,
       stillCurrent,
       confirmedEmpty,
     );
+    if (!table) return null;
+    if (table.length === 0 && !confirmedEmpty && !rpcRows) return null;
+    if (rpcRows && rpcRows.length > 0) {
+      // The table and the official RPC must agree on the latest rows before a
+      // snapshot is allowed to remove local watched state.
+      const tableCoordinates = new Set(table.map((row) => coordinate(row)));
+      if (!rpcRows.every((row) => tableCoordinates.has(coordinate(row)))) {
+        console.warn(
+          "[nuvio-sync] watched table does not match the RPC batch; keeping local state",
+        );
+        return null;
+      }
+    }
+    lastFullSyncAt.set(fullSyncKey, Date.now());
+    return table;
   } catch {
     return null;
   }
@@ -829,7 +866,9 @@ async function reconcileNuvioWatchedOnce(harborProfileId?: string | number): Pro
     `harbor.manualunwatched.v1.nuvio.${profileIndex}`,
   ];
   const before = keys.map((key) => localStorage.getItem(key));
-  const pulled = await pullWatchedItemsFromNuvio(profileIndex);
+  const pulled = await pullWatchedItemsFromNuvio(profileIndex, {
+    force: Object.values(pending).some((change) => change.kind === "watched"),
+  });
   const items =
     pulled &&
     isNuvioProviderActive() &&
@@ -1122,6 +1161,7 @@ function reconcileNuvioProgressHistory(
   const byCoordinate = new Map(items.map((item, i) => [coordinate(item), i]));
   const ownerId = `nuvio-${profileIndex}`;
   const resume = createResumeReader(ownerId);
+  const staleResume: Array<{ id: string; season?: number | null; episode?: number | null }> = [];
   for (const prev of previous) {
     const index = byCoordinate.get(coordinate(prev));
     const local = resume(prev.content_id, prev.season ?? undefined, prev.episode ?? undefined);
@@ -1143,41 +1183,50 @@ function reconcileNuvioProgressHistory(
     } else if (!completeSnapshot) {
       items.push(prev);
     } else {
-      clearResume(prev.content_id, prev.season ?? undefined, prev.episode ?? undefined, ownerId);
+      staleResume.push({
+        id: prev.content_id,
+        season: prev.season ?? null,
+        episode: prev.episode ?? null,
+      });
     }
   }
+  // One map rewrite per storage key instead of one per removed episode/content.
+  clearResumeBatch(staleResume, ownerId);
   const contentIds = new Set(items.map((item) => item.content_id));
   const removedIds = new Set(previous.map((row) => row.content_id));
+  const staleContent: string[] = [];
   for (const id of removedIds) {
-    if (!contentIds.has(id)) clearLocalCw(id, ownerId);
+    if (!contentIds.has(id)) staleContent.push(id);
   }
+  clearLocalCwBatch(staleContent, ownerId);
   return contentIds;
 }
 
 function saveLatestNuvioLocalProgress(items: NuvioWatchProgress[], profileIndex: number): void {
   // Callers sort newest first. Local CW stores one checkpoint per content ID.
+  const ownerId = `nuvio-${profileIndex}`;
+  const current = new Map(listLocalCw(false, ownerId).map((entry) => [entry.id, entry]));
   const saved = new Set<string>();
+  const batch: LocalCwEntry[] = [];
   for (const item of items) {
     if (!item.content_id || saved.has(item.content_id)) continue;
     saved.add(item.content_id);
-    const local = localCwEntry(item.content_id, false, `nuvio-${profileIndex}`);
+    const local = current.get(item.content_id);
     if (local && local.t > progressTime(item)) continue;
-    saveLocalCw(
-      {
-        id: item.content_id,
-        type: item.season != null && item.episode != null ? "series" : "movie",
-        name: item.name || item.title || item.content_id,
-        poster: item.poster || undefined,
-        background: item.background || undefined,
-        season: item.season ?? undefined,
-        episode: item.episode ?? undefined,
-        positionMs: (item.progress_seconds || 0) * 1000,
-        durationMs: (item.duration_seconds || 0) * 1000,
-        t: item.last_watched || (item.updated_at ? Date.parse(item.updated_at) : Date.now()),
-      },
-      `nuvio-${profileIndex}`,
-    );
+    batch.push({
+      id: item.content_id,
+      type: item.season != null && item.episode != null ? "series" : "movie",
+      name: item.name || item.title || item.content_id,
+      poster: item.poster || undefined,
+      background: item.background || undefined,
+      season: item.season ?? undefined,
+      episode: item.episode ?? undefined,
+      positionMs: (item.progress_seconds || 0) * 1000,
+      durationMs: (item.duration_seconds || 0) * 1000,
+      t: item.last_watched || (item.updated_at ? Date.parse(item.updated_at) : Date.now()),
+    });
   }
+  saveLocalCwBatch(batch, ownerId);
 }
 
 /**
@@ -1236,29 +1285,43 @@ async function pullWatchProgressOnce(
     // The table snapshot can still provide an authoritative response.
   }
   if (!stillCurrent()) return [];
-  const rpcCoordinates = new Set((raw ?? []).map((row) => coordinate(row as NuvioCoordinate)));
-  const missingKnown = readCachedWatchProgress(slot, accountId).some(
-    (row) => !rpcCoordinates.has(coordinate(row)),
-  );
+  const rpcRows = raw;
+  const rpcCoordinates = new Set((rpcRows ?? []).map((row) => coordinate(row as NuvioCoordinate)));
   const needsConfirmation = Object.values(readPending(slot, accountId)).some(
     (change) =>
       change.kind === "progress" &&
       (change.deleted || !rpcCoordinates.has(coordinate(change.row))),
   );
-  // Short batches and missing coordinates need a complete table snapshot.
-  // A covered full batch can update checkpoints without authorizing pruning.
-  if (!raw || raw.length < 50 || missingKnown || needsConfirmation) {
+  const fullSyncKey = `${accountId}:${slot}`;
+  const lastFullSync = lastFullSyncAt.get(fullSyncKey) ?? 0;
+  const fullSyncDue = !lastFullSync || Date.now() - lastFullSync >= FULL_SYNC_INTERVAL_MS;
+  // Routine pulls only merge the latest RPC batch. A full snapshot is needed to
+  // prune remote deletions, so it is throttled and forced by pending mutations.
+  if (!rpcRows || needsConfirmation || fullSyncDue) {
     try {
       const table = await readTableSnapshot<NuvioWatchProgress>(
         "watch_progress",
         slot,
         accountId,
         stillCurrent,
-        raw?.length === 0,
+        rpcRows?.length === 0,
       );
       if (table) {
-        raw = table;
-        complete = true;
+        // A table that contradicts the RPC batch is not an authoritative
+        // snapshot. Keep the RPC/cached history instead of pruning it.
+        const tableCoordinates = new Set(table.map((row) => coordinate(row)));
+        const consistent =
+          !rpcRows ||
+          rpcRows.every((row) => tableCoordinates.has(coordinate(row as NuvioCoordinate)));
+        if (consistent) {
+          raw = table;
+          complete = true;
+          lastFullSyncAt.set(fullSyncKey, Date.now());
+        } else {
+          console.warn(
+            "[nuvio-sync] table snapshot does not match the RPC batch; keeping cached history",
+          );
+        }
       }
     } catch {
       // Keep a usable RPC batch, but never prune using it.

@@ -398,8 +398,12 @@ export const AnimeEpisodes = memo(function AnimeEpisodes({
         ? effectiveOrder.visibleEpisodes
         : episodes;
   const baseDisplay = useMemo(
-    () => withEpisodeImdbRatings(unratedDisplay, ratings),
-    [unratedDisplay, ratings],
+    () =>
+      withEpisodeImdbRatings(unratedDisplay, ratings, {
+        seriesMetaId: meta.id,
+        seriesImdbId: imdbId ?? null,
+      }),
+    [unratedDisplay, ratings, meta.id, imdbId],
   );
   const artworkSeasons = useMemo(
     () => [

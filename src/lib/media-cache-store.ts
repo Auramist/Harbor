@@ -17,6 +17,7 @@ export interface MediaCacheStore {
   list(): Promise<MediaCacheIndex[]>;
   clear(): Promise<boolean>;
   touch?(key: string, accessedAt: number): Promise<void>;
+  removeExpired?(now: number): Promise<string[]>;
 }
 
 const DATABASE = "harbor-media-cache";
@@ -37,14 +38,22 @@ function open(): Promise<IDBDatabase | null> {
     };
     let request: IDBOpenDBRequest;
     try {
-      request = indexedDB.open(DATABASE, 1);
+      request = indexedDB.open(DATABASE, 2);
     } catch {
       fail();
       return;
     }
     request.onupgradeneeded = () => {
-      request.result.createObjectStore("entries", { keyPath: "key" });
-      request.result.createObjectStore("index", { keyPath: "key" });
+      const db = request.result;
+      if (!db.objectStoreNames.contains("entries"))
+        db.createObjectStore("entries", { keyPath: "key" });
+      const index = db.objectStoreNames.contains("index")
+        ? request.transaction!.objectStore("index")
+        : db.createObjectStore("index", { keyPath: "key" });
+      if (!index.indexNames.contains("expired"))
+        index.createIndex("expired", "staleUntil");
+      if (!index.indexNames.contains("accessed"))
+        index.createIndex("accessed", "accessedAt");
     };
     request.onerror = fail;
     request.onblocked = fail;
@@ -94,6 +103,16 @@ async function transaction<T>(
   });
 }
 
+async function removeKeys(keys: string[]): Promise<void> {
+  if (!keys.length) return;
+  await transaction("readwrite", (tx) => {
+    for (const key of keys) {
+      tx.objectStore("entries").delete(key);
+      tx.objectStore("index").delete(key);
+    }
+  });
+}
+
 export const mediaCacheStore: MediaCacheStore = {
   async touch(key, accessedAt) {
     await transaction("readwrite", (tx) => {
@@ -120,13 +139,19 @@ export const mediaCacheStore: MediaCacheStore = {
     return result.ok;
   },
   async remove(keys) {
-    if (!keys.length) return;
-    await transaction("readwrite", (tx) => {
-      for (const key of keys) {
-        tx.objectStore("entries").delete(key);
-        tx.objectStore("index").delete(key);
-      }
+    await removeKeys(keys);
+  },
+  async removeExpired(now) {
+    const expired = await transaction<IDBValidKey[]>("readonly", (tx, set) => {
+      const request = tx
+        .objectStore("index")
+        .index("expired")
+        .getAllKeys(IDBKeyRange.upperBound(now));
+      request.onsuccess = () => set(request.result);
     });
+    const keys = expired.ok ? (expired.value ?? []).map(String) : [];
+    await removeKeys(keys);
+    return keys;
   },
   async list() {
     const result = await transaction<MediaCacheIndex[]>("readonly", (tx, set) => {

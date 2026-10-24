@@ -22,6 +22,7 @@ function fixture() {
           clear: request,
           delete: request,
           getAll: request,
+          index: () => ({ getAllKeys: request }),
         }),
         requests,
         abort() {
@@ -44,7 +45,12 @@ function fixture() {
     readFileSync(new URL("../src/lib/media-cache-store.ts", import.meta.url), "utf8"),
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
   ).outputText;
-  vm.runInNewContext(source, { module, exports: module.exports, indexedDB });
+  vm.runInNewContext(source, {
+    module,
+    exports: module.exports,
+    indexedDB,
+    IDBKeyRange: { upperBound: (value) => ({ upper: value }) },
+  });
   return { store: module.exports.mediaCacheStore, transactions };
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -96,4 +102,19 @@ test("reads wait for transaction completion and discard aborted results", async 
   tx.requests[0].onsuccess();
   tx.onabort();
   assert.equal(await reading, null);
+});
+
+test("expired index keys are removed from both stores", async () => {
+  const f = fixture();
+  const working = f.store.removeExpired(123);
+  await tick();
+  const lookup = f.transactions[0];
+  lookup.requests[0].result = ["a", "b"];
+  lookup.requests[0].onsuccess();
+  lookup.oncomplete();
+  await tick();
+  const remove = f.transactions[1];
+  assert.equal(remove.requests.length, 4);
+  remove.oncomplete();
+  assert.deepEqual(await working, ["a", "b"]);
 });

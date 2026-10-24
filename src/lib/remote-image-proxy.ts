@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createObjectUrlCache } from "./object-url-cache";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { suwayomiAuthFor } from "@/lib/manga/sources/suwayomi/auth-registry";
 import { useSettings } from "@/lib/settings";
 import { idbCacheGet, idbCacheDelete, idbCacheKeys } from "@/lib/idb-cache";
@@ -47,6 +47,7 @@ export function needsImageProxy(url: string): boolean {
 
 const blobCache = createObjectUrlCache();
 type BlobEntry = NonNullable<ReturnType<typeof blobCache.get>>;
+type ProxyImageResult = BlobEntry | string;
 // Module scoped, like the blob cache beside it. A failure used to live in
 // component state, so every remount re-invoked harbor_fetch for a url already
 // known to be dead, and each of those is a bridge crossing carrying a base64
@@ -57,7 +58,7 @@ function isDead(url: string): boolean {
   deadUrls.delete(url);
   return false;
 }
-const inflight = new Map<string, Promise<BlobEntry | null>>();
+const inflight = new Map<string, Promise<ProxyImageResult | null>>();
 // Legacy poster blobs share a database with pinned music; only this prefix is disposable.
 const POSTER_PREFIX = "season-poster:v1:";
 const POSTER_TTL = 7 * 24 * 60 * 60_000;
@@ -112,7 +113,7 @@ function proxyImage(
   thumbWidthPx?: number,
   persistent = false,
   migrateLegacy = true,
-): Promise<BlobEntry | null> {
+): Promise<ProxyImageResult | null> {
   const generation = cacheGeneration;
   const key = cacheKeyFor(url, thumbWidthPx);
   const cached = blobCache.get(key);
@@ -125,8 +126,21 @@ function proxyImage(
       const auth = suwayomiAuthFor(url);
       const diskKey = `${POSTER_PREFIX}${thumbWidthPx ?? 0}\n${url}`;
       const persist = persistent && !auth;
+      if (persist && !legacyPruned) {
+        legacyPruned = true;
+        prunePosters();
+      }
+      if (persist) {
+        // A fresh native entry can be served straight through the asset
+        // protocol; this avoids the base64 IPC + Blob path on warm posters.
+        const path = await invoke<string | null>("cached_thumb_path", {
+          url,
+          width: thumbWidthPx ?? 0,
+        }).catch(() => null);
+        if (generation !== cacheGeneration) return null;
+        if (typeof path === "string" && path) return convertFileSrc(path);
+      }
       if (persist && migrateLegacy) {
-        if (!legacyPruned) { legacyPruned = true; prunePosters(); }
         const entry = await Promise.resolve()
           .then(() => idbCacheGet(diskKey))
           .catch(() => null);
@@ -218,12 +232,15 @@ export function useProxiedImageSrc(
     const generation = cacheGeneration;
     let release: (() => void) | undefined;
     void proxyImage(url, thumbWidthPx, persistent, !opts?.originalSize).then((created) => {
-      if (!alive) return;
-      if (created && !created.retired && generation === cacheGeneration) {
+      if (!alive || generation !== cacheGeneration) return;
+      if (typeof created === "string") {
+        setBlob({ key: imageKey, src: created });
+        return;
+      }
+      if (created && !created.retired) {
         release = blobCache.retain(created);
         setBlob({ key: imageKey, src: created.src });
-      }
-      else setFailed(imageKey);
+      } else setFailed(imageKey);
     });
     return () => {
       alive = false;

@@ -615,11 +615,18 @@ export async function tvdbEpisodesByType(
   const episodes = await cachedMedia("tvdb-episodes", [apiKey, seriesId, seasonType, lang ?? "und"],
     () => fetchEpisodesByType(apiKey, seriesId, seasonType, lang), {
       ttl: (rows) => rows.length ? episodeCacheTtl(rows) : 60_000,
-      fallbackOnError: false,
       valid: (rows) => Array.isArray(rows) && rows.every((row) => row && Number.isFinite(row.id) && Number.isFinite(row.number) && Number.isFinite(row.seasonNumber)),
     });
   if (!episodes) throw new Error("TVDB episode catalog unavailable");
-  if (!lang) await saveMedia("tvdb-availability", [apiKey, seriesId, seasonType], episodes.length > 0, { ttl: episodes.length ? MEDIA_TTL.episodes : 60_000 }, undefined, generation);
+  if (!lang)
+    void saveMedia(
+      "tvdb-availability",
+      [apiKey, seriesId, seasonType],
+      episodes.length > 0,
+      { ttl: episodes.length ? MEDIA_TTL.episodes : 60_000 },
+      undefined,
+      generation,
+    ).catch(() => {});
   return episodes;
 }
 
@@ -640,7 +647,9 @@ async function fetchEpisodesByType(
     const arr = data.episodes as any[];
     if (arr.length === 0) return out;
     for (const e of arr) {
-      if (!e || !Number.isFinite(e.number) || !Number.isFinite(e.id)) throw new Error("Malformed TVDB episode row");
+      // A single malformed special/translation row must not discard the rest
+      // of the catalog; skip it and keep the usable episodes.
+      if (!e || !Number.isFinite(e.number) || !Number.isFinite(e.id)) continue;
       out.push({
         id: e.id,
         number: e.number,

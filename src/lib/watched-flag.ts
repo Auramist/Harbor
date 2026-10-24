@@ -37,13 +37,23 @@ function migrateLegacy(): void {
   }
 }
 
+function readScope(scope: string): string | null {
+  const raw = localStorage.getItem(scope);
+  if (raw != null) return raw;
+  if (!isNuvioProviderActive() || !scope.startsWith("harbor.watchedFlag.nuvio.v1.")) return null;
+  // Before the Nuvio-specific key existed, Nuvio flags lived in the Stremio
+  // shared key. Read it until the first pull or local write creates the new key.
+  const profile = activeProfileId();
+  return localStorage.getItem(profile ? `harbor.watchedFlag.v1.${profile}` : LEGACY_KEY);
+}
+
 function load(): Set<string> {
   const scope = storeKey();
   if (cache && currentScope === scope) return cache;
   currentScope = scope;
   migrateLegacy();
   try {
-    const arr = JSON.parse(localStorage.getItem(scope) ?? "[]");
+    const arr = JSON.parse(readScope(scope) ?? "[]");
     cache = new Set(
       Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : [],
     );

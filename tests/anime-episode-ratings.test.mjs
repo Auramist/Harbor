@@ -250,6 +250,31 @@ test("ratings preserve mapped cour coordinates, Specials, unaired guards and row
   assert.equal(rows[0].rating, undefined);
 });
 
+test("franchise rows never receive the anchor series' ratings", () => {
+  const anchor = episode({
+    id: 1,
+    sourceMetaId: undefined,
+    imdbId: "tt1",
+    imdbSeason: 1,
+    imdbEpisode: 1,
+  });
+  const sequel = episode({
+    id: 2,
+    sourceMetaId: "kitsu:2",
+    imdbId: "tt2",
+    imdbSeason: 1,
+    imdbEpisode: 1,
+  });
+  const ratings = new Map([["1:1", 8.4]]);
+  const rated = withEpisodeImdbRatings([anchor, sequel], ratings, {
+    seriesMetaId: "kitsu:1",
+    seriesImdbId: "tt1",
+  });
+  assert.equal(rated[0].rating, 8.4);
+  assert.equal(rated[1], sequel);
+  assert.equal(sequel.rating, undefined);
+});
+
 test("subscribers are notified after publication and stop receiving updates after unsubscribe", async () => {
   const f = fixture();
   const seen = [];

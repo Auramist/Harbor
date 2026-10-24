@@ -101,13 +101,49 @@ export function createMediaCache(
     return job;
   }
 
+  let diskBytes = 0;
+  let diskEntriesKnown = false;
+  let writesSincePrune = 0;
+  const diskSizes = new Map<string, number>();
+
+  async function ensureDiskTotals() {
+    if (diskEntriesKnown) return;
+    const index = await store.list();
+    diskSizes.clear();
+    diskBytes = 0;
+    for (const entry of index) {
+      diskSizes.set(entry.key, entry.bytes);
+      diskBytes += entry.bytes;
+    }
+    diskEntriesKnown = true;
+  }
+
   async function pruneDisk(force = false) {
     if (prune) return prune;
     const scope = generation;
     prune = (async () => {
+      // Expired keys are fetched by index; the full index scan only runs when
+      // the byte budget is actually exceeded or a write needs room.
+      await ensureDiskTotals();
+      if (scope !== generation) return;
+      if (store.removeExpired) {
+        const expired = await store.removeExpired(now()).catch(() => []);
+        for (const key of expired) {
+          diskBytes -= diskSizes.get(key) ?? 0;
+          diskSizes.delete(key);
+        }
+      }
+      if (scope !== generation) return;
+      if (!force && diskBytes <= diskLimit) return;
       const index = await store.list();
       if (scope !== generation) return;
-      let bytes = index.reduce((sum, entry) => sum + entry.bytes, 0);
+      diskSizes.clear();
+      diskBytes = 0;
+      for (const entry of index) {
+        diskSizes.set(entry.key, entry.bytes);
+        diskBytes += entry.bytes;
+      }
+      let bytes = diskBytes;
       const target = force ? diskLimit * 0.8 : diskLimit;
       const remove: string[] = [];
       index.sort((a, b) => a.accessedAt - b.accessedAt);
@@ -117,7 +153,13 @@ export function createMediaCache(
           bytes -= entry.bytes;
         }
       }
-      if (scope === generation) await store.remove(remove);
+      if (scope === generation) {
+        await store.remove(remove);
+        for (const key of remove) {
+          diskBytes -= diskSizes.get(key) ?? 0;
+          diskSizes.delete(key);
+        }
+      }
     })()
       .catch(() => {
         counters.errors++;
@@ -152,14 +194,23 @@ export function createMediaCache(
     pendingWrites.set(key, record);
     return enqueue(async () => {
       if (scope !== generation) return false;
+      await ensureDiskTotals().catch(() => {});
+      let previous = diskSizes.get(key) ?? 0;
       let saved = await store.put(record).catch(() => false);
       if (!saved && scope === generation) {
         await pruneDisk(true);
+        previous = diskSizes.get(key) ?? 0;
         if (scope === generation) saved = await store.put(record).catch(() => false);
       }
       if (saved) {
         counters.writes++;
-        await pruneDisk();
+        diskSizes.set(key, bytes);
+        diskBytes += bytes - previous;
+        writesSincePrune++;
+        if (diskBytes > diskLimit || writesSincePrune >= 32) {
+          writesSincePrune = 0;
+          await pruneDisk();
+        }
       } else counters.errors++;
       return saved;
     }).finally(() => {
@@ -217,10 +268,16 @@ export function createMediaCache(
       counters.misses++;
       traceCache(key, stale ? "revalidate" : "miss");
       running = (async () => {
+        let invalid = false;
         try {
           const value = await loader();
-          if (value == null || policy.valid?.(value) === false)
+          if (value == null) throw new Error("Incomplete media metadata");
+          if (policy.valid?.(value) === false) {
+            // A shape/canonical-id mismatch is not a network failure; do not
+            // let the retry backoff turn the next load into an empty result.
+            invalid = true;
             throw new Error("Incomplete media metadata");
+          }
           const storedAt = now();
           if (scope === generation) {
             retryAt.delete(key);
@@ -229,7 +286,7 @@ export function createMediaCache(
           return { value, storedAt };
         } catch {
           counters.errors++;
-          if (scope === generation) {
+          if (!invalid && scope === generation) {
             retryAt.set(key, now() + 30_000);
             while (retryAt.size > 300) retryAt.delete(retryAt.keys().next().value!);
           }
@@ -280,7 +337,15 @@ export function createMediaCache(
       inFlight.clear();
       pendingWrites.clear();
       retryAt.clear();
-      clearing = enqueue(() => store.clear());
+      writesSincePrune = 0;
+      clearing = enqueue(async () => {
+        const ok = await store.clear();
+        diskSizes.clear();
+        diskBytes = 0;
+        // A failed clear must reload the real totals on the next write.
+        diskEntriesKnown = ok;
+        return ok;
+      });
       return clearing;
     },
     async stats() {
@@ -298,6 +363,15 @@ export function createMediaCache(
 }
 
 const cache = createMediaCache(mediaCacheStore);
+// A best-effort request keeps the durable cache from being evicted as
+// best-effort storage under disk pressure.
+if (typeof navigator !== "undefined") {
+  try {
+    void navigator.storage?.persist?.().catch(() => {});
+  } catch {
+    /* Storage persistence is optional. */
+  }
+}
 const invalidators = new Set<() => void>();
 export const mediaCacheGeneration = () => cache.generation();
 export function onMediaCacheClear(clear: () => void): void {

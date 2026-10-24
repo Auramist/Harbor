@@ -34,6 +34,16 @@ function effectiveOwner(ownerId?: string): string | undefined {
   return ownerId;
 }
 
+function resumeTargetKeys(rawOwner?: string): string[] {
+  const eff = effectiveOwner(rawOwner);
+  if (eff && eff.startsWith("nuvio-")) {
+    const acc = nuvioAccountId();
+    return [`${PRIVATE_PREFIX}${acc}.${eff}`];
+  }
+  if (eff) return [KEY, PRIVATE_PREFIX + eff];
+  return [readKey()];
+}
+
 function readKey(ownerId?: string): string {
   const eff = effectiveOwner(ownerId);
   if (eff && eff.startsWith("nuvio-")) {
@@ -230,17 +240,7 @@ export function clearResume(
 ): void {
   const rawOwner = typeof ownerOrOptions === "string" ? ownerOrOptions : ownerOrOptions?.ownerId;
   const acknowledged = typeof ownerOrOptions === "object" && ownerOrOptions?.acknowledged === true;
-  const eff = effectiveOwner(rawOwner);
-  const targetKeys: string[] = [];
-  if (eff && eff.startsWith("nuvio-")) {
-    const acc = nuvioAccountId();
-    targetKeys.push(`${PRIVATE_PREFIX}${acc}.${eff}`);
-  } else if (eff) {
-    targetKeys.push(KEY, PRIVATE_PREFIX + eff);
-  } else {
-    targetKeys.push(readKey());
-  }
-  for (const key of targetKeys) {
+  for (const key of resumeTargetKeys(rawOwner)) {
     const all = readAll(key);
     if (typeof season === "number" && typeof episode === "number") {
       delete all[entryKey(id, season, episode)];
@@ -252,6 +252,39 @@ export function clearResume(
       }
     }
     writeAll(all, key, acknowledged);
+  }
+}
+
+/** Clear many cloud-resume rows with one write per storage key. */
+export function clearResumeBatch(
+  entries: Array<{ id: string; season?: number | null; episode?: number | null }>,
+  ownerId?: string,
+): void {
+  if (entries.length === 0) return;
+  for (const key of resumeTargetKeys(ownerId)) {
+    const all = readAll(key);
+    let touched = false;
+    for (const { id, season, episode } of entries) {
+      if (!id) continue;
+      if (typeof season === "number" && typeof episode === "number") {
+        const coordinate = entryKey(id, season, episode);
+        if (!(coordinate in all)) continue;
+        delete all[coordinate];
+        touched = true;
+        continue;
+      }
+      if (id in all) {
+        delete all[id];
+        touched = true;
+      }
+      const prefix = `${id}|`;
+      for (const k of Object.keys(all)) {
+        if (!k.startsWith(prefix)) continue;
+        delete all[k];
+        touched = true;
+      }
+    }
+    if (touched) writeAll(all, key);
   }
 }
 
