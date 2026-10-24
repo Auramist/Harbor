@@ -14,12 +14,12 @@ function deferred() {
 }
 
 const counts = { total: 300, movie: 100, series: 120, anime: 60, manga: 20 };
-const page = (ids: string[], nextCursor?: string, totals = counts) => ({
-  items: ids.map((itemKey) => ({
+const page = (ids: string[], nextCursor?: string, totals = counts, scores?: number[]) => ({
+  items: ids.map((itemKey, i) => ({
     itemKey,
     title: itemKey,
     mediaType: "movie",
-    score: 8,
+    score: scores?.[i] ?? 8,
     at: "2026-01-01",
   })),
   nextCursor,
@@ -27,7 +27,7 @@ const page = (ids: string[], nextCursor?: string, totals = counts) => ({
   avg: 8,
 });
 
-function ratingsHarness() {
+function ratingsHarness(options: { failRate?: boolean } = {}) {
   const states: any[] = [],
     refs: any[] = [],
     memos: any[] = [];
@@ -78,6 +78,7 @@ function ratingsHarness() {
     job: ReturnType<typeof deferred>;
   }> = [];
   const jsx = (type: any, props: any, key: any) => ({ type, props, key });
+  const rates: Array<{ itemKey: string; score: number }> = [];
   const mocks: Record<string, any> = {
     react,
     "react/jsx-runtime": { jsx, jsxs: jsx },
@@ -92,6 +93,15 @@ function ratingsHarness() {
     "@/components/context-menu/use-title-context": {},
     "@/lib/i18n": { useT: () => (value: string) => value },
     "@/components/icons/search-icon": { Search: "search" },
+    "@/lib/ratings/actions": {
+      rate(target: any, score: number) {
+        rates.push({ itemKey: target.itemKey, score });
+        return options.failRate ? Promise.reject(new Error("fixture offline")) : Promise.resolve();
+      },
+      unrate() {
+        return Promise.resolve();
+      },
+    },
     "@/lib/social/ratings-api": {
       fetchUserRatings(handle: string, opts: any, signal?: AbortSignal) {
         const job = deferred();
@@ -159,6 +169,11 @@ function ratingsHarness() {
     assert.ok(found, "missing search input");
     return found;
   }
+  function select() {
+    const found = nodes(tree).find((n) => n.type === "select");
+    assert.ok(found, "missing sort select");
+    return found;
+  }
   async function settle() {
     for (let i = 0; i < 8; i++) await Promise.resolve();
     render();
@@ -175,9 +190,23 @@ function ratingsHarness() {
     settle,
     button,
     bodyText: () => text(tree),
+    rows: () => nodes(tree).filter((n) => n.props?.r),
+    rates: () => rates,
     type(value: string) {
       input().props.onChange({ target: { value } });
       render();
+    },
+    order(value: string) {
+      select().props.onChange({ target: { value } });
+      render();
+    },
+    async editRow(itemKey: string, score: number) {
+      const row = nodes(tree).find((n) => n.props?.r?.itemKey === itemKey);
+      assert.ok(row, `missing row ${itemKey}`);
+      assert.ok(row.props.onRate, "row is not editable");
+      row.props.onRate(row.props.r, score);
+      render();
+      await settle();
     },
     click(label: string) {
       const result = button(label).props.onClick();
@@ -315,6 +344,7 @@ test("a search walks the remaining cursor chain so matches past the first page a
   h.type("target");
   assert.deepEqual(h.requests[1].opts, { type: "all", cursor: "cursor-1" });
   await h.resolve(1, page(["gamma", "target-two"], "cursor-2"));
+  assert.deepEqual(h.ids(), ["target-two"], "search streams matches while the walk continues");
   await h.resolve(2, page(["target-three"]));
   assert.deepEqual(h.ids(), ["target-two", "target-three"]);
   assert.ok(!h.buttons().includes("Load more"), "a completed search leaves nothing to paginate");
@@ -377,4 +407,66 @@ test("closing during a search walk cancels it and writes nothing after unmount",
   assert.equal(h.requests[1].signal?.aborted, true);
   assert.equal(h.requests.length, 2, "an aborted walk must not request another page");
   assert.equal(h.writesAfterUnmount(), 0);
+});
+
+test("ordering by highest rating finishes the pagination before it sorts", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["a", "b"], "cursor-1", counts, [3, 9]));
+  assert.deepEqual(h.ids(), ["a", "b"], "ordering off keeps the server order");
+  h.order("high");
+  assert.deepEqual(h.requests[1].opts, { type: "all", cursor: "cursor-1" });
+  await h.resolve(1, page(["c"], undefined, counts, [7]));
+  assert.deepEqual(h.ids(), ["b", "c", "a"]);
+});
+
+test("ordering by lowest rating sorts ascending", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["a", "b", "c"], undefined, counts, [5, 1, 9]));
+  h.order("low");
+  assert.deepEqual(h.ids(), ["b", "a", "c"]);
+  assert.equal(h.requests.length, 1, "a fully loaded list needs no further page");
+});
+
+test("returning to the default order restores the server order without a walk", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["a", "b"], undefined, counts, [1, 5]));
+  h.order("high");
+  assert.deepEqual(h.ids(), ["b", "a"]);
+  h.order("default");
+  assert.deepEqual(h.ids(), ["a", "b"]);
+  assert.equal(h.requests.length, 1, "ordering off must not trigger a walk");
+});
+
+test("a visitor gets no quick-edit affordance", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["alpha"]));
+  assert.ok(h.rows().every((row) => row.props.onRate === undefined));
+});
+
+test("the profile owner can change a score in place and it is saved", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["alpha", "beta"]));
+  h.render({ isOwner: true });
+  await h.editRow("alpha", 4);
+  assert.deepEqual(h.rates(), [{ itemKey: "alpha", score: 4 }]);
+  assert.equal(h.rows().find((n) => n.props.r.itemKey === "alpha")?.props.r.score, 4);
+  assert.equal(h.rows().find((n) => n.props.r.itemKey === "beta")?.props.r.score, 8);
+});
+
+test("a rejected quick edit rolls the row back to the saved score", async () => {
+  const h = ratingsHarness({ failRate: true });
+  await h.resolve(0, page(["alpha"]));
+  h.render({ isOwner: true });
+  await h.editRow("alpha", 3);
+  assert.equal(h.rows()[0]?.props.r.score, 8, "a failed save must not look saved");
+});
+
+test("ordering holds the list until every page is loaded so the order never churns", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["a", "b"], "cursor-1", counts, [3, 9]));
+  h.order("high");
+  assert.deepEqual(h.ids(), [], "a part-loaded order is not shown");
+  assert.ok(h.bodyText().includes("Loading all ratings"));
+  await h.resolve(1, page(["c"], undefined, counts, [7]));
+  assert.deepEqual(h.ids(), ["b", "c", "a"], "the settled order is shown once");
 });

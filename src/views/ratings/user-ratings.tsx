@@ -5,6 +5,7 @@ import { Eye, Loader2, X } from "lucide-react";
 import { Search } from "@/components/icons/search-icon";
 import { Poster } from "@/components/poster";
 import { RatingStars } from "@/components/ratings/rating-stars";
+import { rate } from "@/lib/ratings/actions";
 import { useT } from "@/lib/i18n";
 import { fetchUserRatings } from "@/lib/social/ratings-api";
 import type { PublicRating, RatingCounts } from "@/lib/ratings/types";
@@ -23,6 +24,9 @@ const TABS: Array<{ id: string; label: string; countKey: keyof RatingCounts }> =
 
 const EMPTY_COUNTS: RatingCounts = { movie: 0, series: 0, anime: 0, manga: 0, total: 0 };
 
+/** Ordering reads the whole list, so it needs every page loaded first. */
+type SortMode = "default" | "high" | "low";
+
 type RatingsRequest = {
   handle: string;
   type: string;
@@ -34,11 +38,13 @@ type RatingsRequest = {
 export function UserRatings({
   handle,
   alias,
+  isOwner = false,
   onOpenMeta,
   onClose,
 }: {
   handle: string;
   alias: string;
+  isOwner?: boolean;
   onOpenMeta?: (metaId: string, kind?: string, hint?: { name?: string; poster?: string }) => void;
   onClose: () => void;
 }) {
@@ -50,7 +56,8 @@ export function UserRatings({
   const [loading, setLoading] = useState(true);
   const [more, setMore] = useState(false);
   const [q, setQ] = useState("");
-  const [searching, setSearching] = useState(false);
+  const [sort, setSort] = useState<SortMode>("default");
+  const [loadingAll, setLoadingAll] = useState(false);
   const cursorRef = useRef<string | undefined>(undefined);
   const seen = useRef<string | null>(null);
   const request = useRef<RatingsRequest | null>(null);
@@ -129,20 +136,24 @@ export function UserRatings({
     }
   }, [cursor, handle, type]);
 
-  // A query walks the remaining cursor chain instead of filtering only the pages
-  // already on screen, so results cover the whole ratings list rather than the
-  // visible page. It shares the tab's request identity, so a tab switch, profile
-  // change or close cancels it exactly like manual pagination. Clearing the query
-  // keeps everything it loaded.
+  const needle = q.trim().toLowerCase();
+  // Searching and ordering both read the whole list rather than one page of it,
+  // so either one finishes the pagination before the list is presented.
+  const walkAll = needle.length > 0 || sort !== "default";
+
+  // Walking the remaining cursor chain covers the whole ratings list instead of
+  // the pages already on screen. It shares the tab's request identity, so a tab
+  // switch, profile change or close cancels it exactly like manual pagination.
+  // Turning the query or the ordering back off keeps everything it loaded.
   useEffect(() => {
-    if (!q.trim() || loading) {
-      setSearching(false);
+    if (!walkAll || loading) {
+      setLoadingAll(false);
       return;
     }
     const current = request.current;
     if (!current || current.handle !== handle || current.type !== type) return;
     let cancelled = false;
-    setSearching(true);
+    setLoadingAll(true);
     void (async () => {
       let next = cursorRef.current;
       while (!cancelled && next) {
@@ -158,15 +169,43 @@ export function UserRatings({
         setItems((prev) => [...prev, ...page.items]);
         setCursor(next);
       }
-      if (!cancelled) setSearching(false);
+      if (!cancelled) setLoadingAll(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [q, loading, handle, type]);
+  }, [walkAll, loading, handle, type]);
 
-  const needle = q.trim().toLowerCase();
-  const visible = needle ? items.filter((r) => r.title.toLowerCase().includes(needle)) : items;
+  // Ordering a partly loaded list would visibly reshuffle as pages stream in, so
+  // the list is held until the walk finishes. Searching still streams: matches
+  // appearing as they are found is the point of it.
+  const holdForOrder = loadingAll && sort !== "default";
+
+  const filtered = needle ? items.filter((r) => r.title.toLowerCase().includes(needle)) : items;
+  const visible =
+    sort === "default"
+      ? filtered
+      : [...filtered].sort((a, b) => (sort === "high" ? b.score - a.score : a.score - b.score));
+
+  const changeScore = useCallback(async (r: PublicRating, score: number) => {
+    if (score === r.score) return;
+    const previous = r.score;
+    setItems((list) => list.map((x) => (x.itemKey === r.itemKey ? { ...x, score } : x)));
+    try {
+      await rate(
+        { itemKey: r.itemKey, mediaType: r.mediaType, title: r.title, poster: r.posterUrl },
+        score,
+        { review: r.review, spoiler: r.spoiler },
+      );
+    } catch {
+      // A rejected edit must not leave the row claiming a score the server never took.
+      if (!request.current?.controller.signal.aborted) {
+        setItems((list) =>
+          list.map((x) => (x.itemKey === r.itemKey ? { ...x, score: previous } : x)),
+        );
+      }
+    }
+  }, []);
 
   return createPortal(
     <div
@@ -229,18 +268,29 @@ export function UserRatings({
               </button>
             );
           })}
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortMode)}
+            aria-label={t("Sort ratings")}
+            className="ms-auto h-8 rounded-full border border-edge bg-canvas ps-3 pe-2 text-[12.5px] font-medium text-ink-muted outline-none transition-colors hover:bg-elevated hover:text-ink focus:border-ink-subtle"
+          >
+            <option value="default">{t("Default order")}</option>
+            <option value="high">{t("Highest rated")}</option>
+            <option value="low">{t("Lowest rated")}</option>
+          </select>
         </div>
 
         <div className="flex-1 overflow-y-auto px-7 py-6">
-          {loading ? (
-            <div className="flex h-40 items-center justify-center">
+          {loading || holdForOrder ? (
+            <div className="flex h-40 flex-col items-center justify-center gap-2 text-[13.5px] text-ink-muted">
               <Loader2 size={22} className="animate-spin text-ink-subtle" />
+              {holdForOrder && <span>{t("Loading all ratings")}</span>}
             </div>
           ) : visible.length === 0 ? (
             <div className="flex h-40 flex-col items-center justify-center gap-2 text-[13.5px] text-ink-muted">
-              {searching && <Loader2 size={18} className="animate-spin text-ink-subtle" />}
-              {searching
-                ? t("Searching all ratings")
+              {loadingAll && <Loader2 size={18} className="animate-spin text-ink-subtle" />}
+              {loadingAll
+                ? t("Loading all ratings")
                 : needle
                   ? t("No ratings match your search")
                   : t("No ratings yet")}
@@ -248,12 +298,17 @@ export function UserRatings({
           ) : (
             <div className="flex flex-col gap-3">
               {visible.map((r) => (
-                <RatingRow key={r.itemKey} r={r} onOpenMeta={onOpenMeta} />
+                <RatingRow
+                  key={r.itemKey}
+                  r={r}
+                  onOpenMeta={onOpenMeta}
+                  onRate={isOwner ? changeScore : undefined}
+                />
               ))}
-              {searching ? (
+              {loadingAll ? (
                 <div className="mx-auto mt-2 inline-flex items-center gap-2 text-[12.5px] text-ink-subtle">
                   <Loader2 size={14} className="animate-spin" />
-                  {t("Searching all ratings")}
+                  {t("Loading all ratings")}
                 </div>
               ) : (
                 cursor && (
@@ -280,12 +335,15 @@ export function UserRatings({
 function RatingRow({
   r,
   onOpenMeta,
+  onRate,
 }: {
   r: PublicRating;
   onOpenMeta?: (metaId: string, kind?: string, hint?: { name?: string; poster?: string }) => void;
+  onRate?: (r: PublicRating, score: number) => void;
 }) {
   const t = useT();
   const [revealed, setRevealed] = useState(false);
+  const [editing, setEditing] = useState(false);
   const poster = useRatingPoster(r.itemKey, r.mediaType, r.title, r.posterUrl);
   const media = useProfileTitle(r.itemKey, r.title, poster, r.mediaType);
   const open = onOpenMeta
@@ -330,8 +388,33 @@ function RatingRow({
           <span className="shrink-0 text-[12px] tabular-nums text-ink-subtle">{timeAgo(r.at)}</span>
         </div>
         <div className="mt-1 flex items-center gap-2">
-          <RatingStars value={r.score} readOnly size={14} />
-          <span className="text-[12px] font-bold tabular-nums text-ink">{r.score}/10</span>
+          {editing ? (
+            // Revealed deliberately: RatingStars commits on pointer-down, so an
+            // always-live row would let a stray click rewrite a real rating.
+            <RatingStars
+              value={r.score}
+              size={16}
+              ariaLabel={t("Change rating")}
+              onChange={(n) => {
+                setEditing(false);
+                onRate?.(r, n);
+              }}
+            />
+          ) : (
+            <>
+              <RatingStars value={r.score} readOnly size={14} />
+              <span className="text-[12px] font-bold tabular-nums text-ink">{r.score}/10</span>
+              {onRate && (
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  className="rounded-full border border-edge px-2.5 py-0.5 text-[11.5px] font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
+                >
+                  {t("Edit")}
+                </button>
+              )}
+            </>
+          )}
         </div>
         {r.review && (
           <div className="relative mt-2">
