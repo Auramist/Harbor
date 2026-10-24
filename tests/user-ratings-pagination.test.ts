@@ -91,6 +91,7 @@ function ratingsHarness() {
     "@/lib/social/profile-media-meta": {},
     "@/components/context-menu/use-title-context": {},
     "@/lib/i18n": { useT: () => (value: string) => value },
+    "@/components/icons/search-icon": { Search: "search" },
     "@/lib/social/ratings-api": {
       fetchUserRatings(handle: string, opts: any, signal?: AbortSignal) {
         const job = deferred();
@@ -153,6 +154,11 @@ function ratingsHarness() {
     assert.ok(found, `missing button ${label}`);
     return found;
   }
+  function input() {
+    const found = nodes(tree).find((n) => n.type === "input");
+    assert.ok(found, "missing search input");
+    return found;
+  }
   async function settle() {
     for (let i = 0; i < 8; i++) await Promise.resolve();
     render();
@@ -168,6 +174,11 @@ function ratingsHarness() {
     resolve,
     settle,
     button,
+    bodyText: () => text(tree),
+    type(value: string) {
+      input().props.onChange({ target: { value } });
+      render();
+    },
     click(label: string) {
       const result = button(label).props.onClick();
       render();
@@ -295,4 +306,75 @@ test("failed pagination retains its items/cursor and can be retried", async () =
   assert.deepEqual(h.requests[2].opts, { type: "all", cursor: "next" });
   await h.resolve(2, page(["two"]));
   assert.deepEqual(h.ids(), ["one", "two"]);
+});
+
+test("a search walks the remaining cursor chain so matches past the first page are found", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["alpha", "beta"], "cursor-1"));
+  assert.deepEqual(h.ids(), ["alpha", "beta"]);
+  h.type("target");
+  assert.deepEqual(h.requests[1].opts, { type: "all", cursor: "cursor-1" });
+  await h.resolve(1, page(["gamma", "target-two"], "cursor-2"));
+  await h.resolve(2, page(["target-three"]));
+  assert.deepEqual(h.ids(), ["target-two", "target-three"]);
+  assert.ok(!h.buttons().includes("Load more"), "a completed search leaves nothing to paginate");
+});
+
+test("a search matches titles case-insensitively without reloading the first page", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["Target One", "other"], "cursor-1"));
+  h.type("TARGET");
+  assert.deepEqual(h.ids(), ["Target One"]);
+  assert.deepEqual(
+    h.requests.map((r) => r.opts.cursor),
+    [undefined, "cursor-1"],
+    "the first page is reused, not refetched",
+  );
+});
+
+test("clearing the search keeps the pages the walk loaded", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["alpha"], "cursor-1"));
+  h.type("target");
+  await h.resolve(1, page(["target-two"], "cursor-2"));
+  assert.deepEqual(h.ids(), ["target-two"]);
+  // The walk has already asked for cursor-2; clearing abandons that in-flight
+  // request (the controller is shared with tab pagination) but issues no new one.
+  const issued = h.requests.length;
+  h.type("");
+  assert.equal(h.requests.length, issued, "clearing must not issue another request");
+  assert.deepEqual(h.ids(), ["alpha", "target-two"]);
+});
+
+test("a query with no matches reports it rather than showing the empty-ratings message", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["alpha"]));
+  h.type("zeta");
+  assert.deepEqual(h.ids(), []);
+  assert.ok(h.bodyText().includes("No ratings match your search"));
+});
+
+test("switching tabs during a search cancels the old walk and paginates the new tab", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["alpha"], "next"));
+  h.type("target");
+  h.click("Movies");
+  await h.resolve(2, page(["target-movie"], "movie-next"));
+  await h.resolve(1, page(["stale"], "stale-next"));
+  assert.deepEqual(h.ids(), ["target-movie"]);
+  assert.equal(h.requests[1].signal?.aborted, true);
+  assert.deepEqual(h.requests[3].opts, { type: "movie", cursor: "movie-next" });
+});
+
+test("closing during a search walk cancels it and writes nothing after unmount", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["alpha"], "cursor-1"));
+  h.type("target");
+  assert.equal(h.requests[1].opts.cursor, "cursor-1");
+  h.unmount();
+  h.requests[1].job.resolve(page(["target-two"], "cursor-2"));
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  assert.equal(h.requests[1].signal?.aborted, true);
+  assert.equal(h.requests.length, 2, "an aborted walk must not request another page");
+  assert.equal(h.writesAfterUnmount(), 0);
 });

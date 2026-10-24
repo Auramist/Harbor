@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRatingPoster } from "@/lib/ratings/poster";
 import { createPortal } from "react-dom";
 import { Eye, Loader2, X } from "lucide-react";
+import { Search } from "@/components/icons/search-icon";
 import { Poster } from "@/components/poster";
 import { RatingStars } from "@/components/ratings/rating-stars";
 import { useT } from "@/lib/i18n";
@@ -48,6 +49,9 @@ export function UserRatings({
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [more, setMore] = useState(false);
+  const [q, setQ] = useState("");
+  const [searching, setSearching] = useState(false);
+  const cursorRef = useRef<string | undefined>(undefined);
   const seen = useRef<string | null>(null);
   const request = useRef<RatingsRequest | null>(null);
 
@@ -69,6 +73,7 @@ export function UserRatings({
     setLoading(true);
     setMore(false);
     setCursor(undefined);
+    cursorRef.current = undefined;
     setItems([]);
     if (seen.current !== handle) setCounts(EMPTY_COUNTS);
     fetchUserRatings(handle, { type }, ac.signal)
@@ -76,6 +81,7 @@ export function UserRatings({
         if (ac.signal.aborted) return;
         setItems(page.items);
         setCursor(page.nextCursor);
+        cursorRef.current = page.nextCursor;
         if (seen.current !== handle || type === "all") setCounts(page.counts);
         seen.current = handle;
         current.loading = false;
@@ -112,6 +118,7 @@ export function UserRatings({
       if (request.current !== current || current.controller.signal.aborted) return;
       setItems((prev) => [...prev, ...page.items]);
       setCursor(page.nextCursor);
+      cursorRef.current = page.nextCursor;
     } catch {
       // Keep the current page and cursor available for a retry.
     } finally {
@@ -121,6 +128,45 @@ export function UserRatings({
       }
     }
   }, [cursor, handle, type]);
+
+  // A query walks the remaining cursor chain instead of filtering only the pages
+  // already on screen, so results cover the whole ratings list rather than the
+  // visible page. It shares the tab's request identity, so a tab switch, profile
+  // change or close cancels it exactly like manual pagination. Clearing the query
+  // keeps everything it loaded.
+  useEffect(() => {
+    if (!q.trim() || loading) {
+      setSearching(false);
+      return;
+    }
+    const current = request.current;
+    if (!current || current.handle !== handle || current.type !== type) return;
+    let cancelled = false;
+    setSearching(true);
+    void (async () => {
+      let next = cursorRef.current;
+      while (!cancelled && next) {
+        const page = await fetchUserRatings(
+          handle,
+          { type, cursor: next },
+          current.controller.signal,
+        ).catch(() => null);
+        if (cancelled || request.current !== current || current.controller.signal.aborted) return;
+        if (!page) break;
+        next = page.nextCursor;
+        cursorRef.current = next;
+        setItems((prev) => [...prev, ...page.items]);
+        setCursor(next);
+      }
+      if (!cancelled) setSearching(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [q, loading, handle, type]);
+
+  const needle = q.trim().toLowerCase();
+  const visible = needle ? items.filter((r) => r.title.toLowerCase().includes(needle)) : items;
 
   return createPortal(
     <div
@@ -135,16 +181,31 @@ export function UserRatings({
         className="animate-modal-in relative m-6 flex max-h-[calc(100vh-3rem)] w-full max-w-[900px] flex-col overflow-hidden rounded-3xl border border-edge-soft bg-surface shadow-[0_30px_120px_-30px_rgba(0,0,0,0.85)]"
       >
         <header className="flex items-center justify-between gap-4 border-b border-edge-soft px-7 py-5">
-          <h2 className="font-display text-[24px] font-medium leading-tight tracking-tight text-ink">
+          <h2 className="min-w-0 truncate font-display text-[24px] font-medium leading-tight tracking-tight text-ink">
             {t("{name}'s ratings", { name: alias })}
           </h2>
-          <button
-            onClick={onClose}
-            aria-label={t("Close")}
-            className="flex h-10 w-10 items-center justify-center rounded-full border border-edge text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
-          >
-            <X size={16} strokeWidth={2} />
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <div className="relative">
+              <Search
+                size={15}
+                className="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-ink-subtle"
+              />
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder={t("Search ratings")}
+                aria-label={t("Search ratings")}
+                className="h-10 w-44 rounded-full border border-edge bg-canvas ps-9 pe-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-subtle focus:border-ink-subtle focus:bg-elevated sm:w-56"
+              />
+            </div>
+            <button
+              onClick={onClose}
+              aria-label={t("Close")}
+              className="flex h-10 w-10 items-center justify-center rounded-full border border-edge text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
+            >
+              <X size={16} strokeWidth={2} />
+            </button>
+          </div>
         </header>
 
         <div className="flex flex-wrap gap-1.5 border-b border-edge-soft px-7 py-3">
@@ -175,25 +236,37 @@ export function UserRatings({
             <div className="flex h-40 items-center justify-center">
               <Loader2 size={22} className="animate-spin text-ink-subtle" />
             </div>
-          ) : items.length === 0 ? (
-            <div className="flex h-40 items-center justify-center text-[13.5px] text-ink-muted">
-              {t("No ratings yet")}
+          ) : visible.length === 0 ? (
+            <div className="flex h-40 flex-col items-center justify-center gap-2 text-[13.5px] text-ink-muted">
+              {searching && <Loader2 size={18} className="animate-spin text-ink-subtle" />}
+              {searching
+                ? t("Searching all ratings")
+                : needle
+                  ? t("No ratings match your search")
+                  : t("No ratings yet")}
             </div>
           ) : (
             <div className="flex flex-col gap-3">
-              {items.map((r) => (
+              {visible.map((r) => (
                 <RatingRow key={r.itemKey} r={r} onOpenMeta={onOpenMeta} />
               ))}
-              {cursor && (
-                <button
-                  type="button"
-                  onClick={loadMore}
-                  disabled={more}
-                  className="mx-auto mt-2 inline-flex items-center gap-2 rounded-full border border-edge px-5 py-2 text-[13px] font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink disabled:opacity-50"
-                >
-                  {more && <Loader2 size={14} className="animate-spin" />}
-                  {t("Load more")}
-                </button>
+              {searching ? (
+                <div className="mx-auto mt-2 inline-flex items-center gap-2 text-[12.5px] text-ink-subtle">
+                  <Loader2 size={14} className="animate-spin" />
+                  {t("Searching all ratings")}
+                </div>
+              ) : (
+                cursor && (
+                  <button
+                    type="button"
+                    onClick={loadMore}
+                    disabled={more}
+                    className="mx-auto mt-2 inline-flex items-center gap-2 rounded-full border border-edge px-5 py-2 text-[13px] font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink disabled:opacity-50"
+                  >
+                    {more && <Loader2 size={14} className="animate-spin" />}
+                    {t("Load more")}
+                  </button>
+                )
               )}
             </div>
           )}
