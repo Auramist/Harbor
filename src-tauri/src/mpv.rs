@@ -1757,6 +1757,28 @@ pub async fn mpv_get_property(state: State<'_, MpvState>, name: String) -> Resul
     })
 }
 
+/// Reads a list option such as `sub-ass-style-overrides` item by item. `mpv_get_property`
+/// returns mpv's text form, which doesn't escape commas inside items, so writing that text
+/// back would split an item like `FontName=Comic, Neue` in two.
+#[tauri::command]
+pub async fn mpv_get_property_list(
+    state: State<'_, MpvState>,
+    name: String,
+) -> Result<Vec<String>, String> {
+    let mpv = {
+        let g = state.inner.lock().await;
+        g.as_ref()
+            .map(|s| s.mpv.clone())
+            .ok_or_else(|| "mpv not started".to_string())?
+    };
+    let node: MpvNode = mpv
+        .get_property(&name)
+        .map_err(|e| format!("get {}: {}", name, e))?;
+    node.array()
+        .and_then(|items| items.map(|item| item.str().map(str::to_string)).collect())
+        .ok_or_else(|| format!("{} is not a list of text", name))
+}
+
 /// Descriptions of the passes mpv's video output is currently running, taken
 /// from `vo-passes`. `glsl-shaders` only echoes back what was requested, so a
 /// chain that failed to compile still reads as active there. This is what the

@@ -18,6 +18,7 @@ import { useSettings } from "@/lib/settings";
 import { useLocalAwareSeriesPlay } from "@/lib/local-library/use-series-play";
 import { useT } from "@/lib/i18n";
 import { EpisodeDownloadButton } from "./episode-download-button";
+import { EpisodeReviewsButton } from "./episode-reviews-dialog";
 import { resumeDefaultSeason } from "@/lib/episode-progress";
 import { DragStrip } from "@/components/drag-strip";
 import { EpisodeGrid } from "./episode-grid";
@@ -131,8 +132,9 @@ export function CinemetaEpisodes({
     );
   }, [meta.id, seasonStats, combinedWatched, resumeSeason]);
 
+  const reviewsImdbId = imdbId ?? (/^tt\d+$/.test(meta.id) ? meta.id : null);
   const imdbRatings = useEpisodeImdbRatings(
-    settings.showEpisodeRating ? (imdbId ?? (/^tt\d+$/.test(meta.id) ? meta.id : null)) : null,
+    settings.showEpisodeRating ? reviewsImdbId : null,
     active,
     settings.omdbKey,
   );
@@ -206,6 +208,7 @@ export function CinemetaEpisodes({
           upcoming: isUpcomingDate(airDate),
           rating: imdbRatings.get(`${season}:${number}`),
           ratingIsImdb: true,
+          reviews: reviewsImdbId ? { imdbId: reviewsImdbId, season, episode: number } : undefined,
           play: (opts) =>
             playLocalAware({
               meta,
@@ -228,6 +231,7 @@ export function CinemetaEpisodes({
     [
       activeEps,
       imdbRatings,
+      reviewsImdbId,
       meta,
       t,
       playLocalAware,
@@ -332,6 +336,7 @@ export function CinemetaEpisodes({
                   meta={meta}
                   ep={ep}
                   imdbRating={imdbRatings.get(`${season}:${epNumber}`)}
+                  reviewsImdbId={reviewsImdbId}
                   flatIndex={ep.season == null ? i + 1 : undefined}
                   watched={watchedAt(season, epNumber)}
                   onContextMenu={openWatchedMenu}
@@ -364,6 +369,7 @@ export function CinemetaEpisodeRow({
   ep,
   flatIndex,
   imdbRating,
+  reviewsImdbId,
   watched = false,
   onContextMenu,
 }: {
@@ -371,6 +377,7 @@ export function CinemetaEpisodeRow({
   ep: CinemetaVideo;
   flatIndex?: number;
   imdbRating?: number;
+  reviewsImdbId?: string | null;
   watched?: boolean;
   onContextMenu?: (e: React.MouseEvent, season: number, episode: number, watched: boolean) => void;
 }) {
@@ -455,6 +462,15 @@ export function CinemetaEpisodeRow({
           )}
         </div>
       </button>
+      {ep.season != null && reviewsImdbId && (
+        <EpisodeReviewsButton
+          meta={meta}
+          seriesImdbId={reviewsImdbId}
+          season={season}
+          episode={epNumber}
+          episodeTitle={ep.name || ep.title || undefined}
+        />
+      )}
       <EpisodeDownloadButton meta={meta} episode={playEpisode} />
     </div>
   );

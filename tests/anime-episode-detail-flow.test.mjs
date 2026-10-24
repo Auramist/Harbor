@@ -160,11 +160,18 @@ test("both strip and grid information buttons pass the same playback payload as 
     "@/lib/providers/anime-episode-enrich": { unairedIndexes: () => new Set() },
     "./helpers": { isUpcomingDate: () => false },
     "./episode-rating-badge": { EpisodeRatingBadge: marker("rating") },
+    "./anime-episodes/anime-reviews-button": { AnimeReviewsButton: marker("reviews") },
+    "@/lib/episode-reviews": {
+      episodeReviewsTarget: (imdbId, season, episode) =>
+        imdbId && season != null && episode != null ? { imdbId, season, episode } : undefined,
+    },
   });
   const props = { meta: parent, episodes: [row], metaForEp: () => entry,
     progressFor: () => ({ ratio: 0, watched: false, startedAt: 0 }) };
   const gridProps = AnimeEpisodeStrip({ ...props, layout: "grid" }).props;
   const grid = gridProps.present(gridProps.episodes[0]);
+  // Reviews follow IMDb's numbering, not the franchise entry's own episode number.
+  assert.deepEqual(grid.reviews, { imdbId: "tt2560140", season: 3, episode: 13 });
   grid.play();
   grid.openDetail();
   const strip = AnimeEpisodeStrip({ ...props, layout: "strip" });

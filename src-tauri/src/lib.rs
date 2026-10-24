@@ -1017,7 +1017,12 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin({
             let builder = tauri_plugin_window_state::Builder::default()
-                .with_denylist(&["harbor-ytmusic-embed", "harbor-tray-menu"])
+                .with_denylist(&[
+                    #[cfg(target_os = "macos")]
+                    "main",
+                    "harbor-ytmusic-embed",
+                    "harbor-tray-menu",
+                ])
                 .with_state_flags(
                     tauri_plugin_window_state::StateFlags::SIZE
                         | tauri_plugin_window_state::StateFlags::POSITION
@@ -1702,6 +1707,7 @@ pub fn run() {
             mpv::mpv_command,
             mpv::mpv_set_property,
             mpv::mpv_get_property,
+            mpv::mpv_get_property_list,
             mpv::mpv_vo_passes,
             mpv::mpv_audio_devices,
             mpv::mpv_set_geometry,

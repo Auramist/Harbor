@@ -16,6 +16,8 @@ import type { GridEpisode } from "./episode-grid-types";
 import { FillerBadge, UpcomingBadge } from "./badges";
 import { isUpcomingDate } from "./helpers";
 import { EpisodeRatingBadge } from "./episode-rating-badge";
+import { AnimeReviewsButton } from "./anime-episodes/anime-reviews-button";
+import { episodeReviewsTarget } from "@/lib/episode-reviews";
 
 type Progress = { ratio: number; watched: boolean; startedAt: number };
 
@@ -74,6 +76,8 @@ export function AnimeEpisodeStrip({
         upcoming: isUpcomingDate(ep.airdate) || (!!unairedIds && unairedIds.has(ep.id)),
         meta: epMeta,
         sourceMetaId: ep.sourceMetaId,
+        // Anime numbering differs from IMDb's, so reviews use the IMDb season and episode.
+        reviews: episodeReviewsTarget(ep.imdbId, ep.imdbSeason, ep.imdbEpisode),
         play: (opts) =>
           openPicker(
             epMeta,
@@ -245,6 +249,7 @@ function AnimeEpisodeStripCard({
             {upcoming && ep.airdate ? ` · ${formatAirDate(ep.airdate)}` : ""}
           </span>
         </button>
+        <AnimeReviewsButton meta={parentMeta ?? meta} ep={ep} />
         <HoverTooltip label={t("Episode details")} align="center" className="shrink-0">
           <button
             type="button"
