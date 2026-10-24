@@ -1,6 +1,7 @@
 import { lruSet } from "@/lib/cache";
 import { registerCache } from "@/lib/memory-profiler";
 import { safeFetch } from "@/lib/safe-fetch";
+import { loadMedia, episodeCacheTtl, onMediaCacheClear, mediaCacheGeneration } from "@/lib/media-cache";
 
 const HOST = "https://anime-kitsu.strem.fun";
 const TTL = 6 * 60 * 60 * 1000;
@@ -11,6 +12,7 @@ const cache = new Map<string, { v: AnimeKitsuMeta | null; t: number }>();
 const inflight = new Map<string, Promise<AnimeKitsuMeta | null>>();
 
 registerCache("anime-kitsu:meta", () => cache.size);
+onMediaCacheClear(() => { cache.clear(); inflight.clear(); });
 
 export type AnimeKitsuVideo = {
   id: string;
@@ -78,10 +80,12 @@ export async function animeKitsuMeta(metaId: string): Promise<AnimeKitsuMeta | n
   // steady-state hydration path: award and rail metas ship with no art on
   // purpose, so a title this addon does not carry was re-asked twice per tile
   // mount, for the life of the session, with nothing ever written down.
-  if (hit && Date.now() - hit.t < (hit.v ? TTL : NEG_TTL)) return hit.v;
+  if (hit && Date.now() - hit.t < (hit.v ? Math.min(TTL, episodeCacheTtl(hit.v.videos)) : NEG_TTL)) return hit.v;
   const existing = inflight.get(key);
   if (existing) return existing;
-  const p = (async () => {
+  const generation = mediaCacheGeneration();
+  let definitiveAbsence = false;
+  const p = loadMedia<AnimeKitsuMeta>("anime-addon-meta", [HOST, metaId], async () => {
     try {
       const seriesUrl = `${HOST}/meta/series/${encodeURIComponent(metaId)}.json`;
       const movieUrl = `${HOST}/meta/movie/${encodeURIComponent(metaId)}.json`;
@@ -91,10 +95,11 @@ export async function animeKitsuMeta(metaId: string): Promise<AnimeKitsuMeta | n
       if (!raw?.meta || !raw.meta.id) {
         const r2 = await safeFetch(movieUrl);
         if (r2.ok) raw = (await r2.json()) as AddonMetaResponse;
+        const absent = (response: Response) => response.ok || response.status === 404 || response.status === 410;
+        definitiveAbsence = absent(r) && absent(r2) && !raw?.meta?.id;
       }
       const m = raw?.meta;
       if (!m?.id) {
-        lruSet(cache, key, { v: null, t: Date.now() }, CACHE_MAX);
         return null;
       }
       const out: AnimeKitsuMeta = {
@@ -111,15 +116,17 @@ export async function animeKitsuMeta(metaId: string): Promise<AnimeKitsuMeta | n
         videos: m.videos ?? [],
         links: m.links ?? [],
       };
-      lruSet(cache, key, { v: out, t: Date.now() }, CACHE_MAX);
       return out;
     } catch {
-      lruSet(cache, key, { v: null, t: Date.now() }, CACHE_MAX);
       return null;
-    } finally {
-      inflight.delete(key);
     }
-  })();
+  }, { ttl: (meta) => episodeCacheTtl(meta.videos) }).then(({ value, storedAt }) => {
+    if (generation === mediaCacheGeneration()) {
+      if (value) lruSet(cache, key, { v: value, t: storedAt ?? Date.now() }, CACHE_MAX);
+      else if (definitiveAbsence) lruSet(cache, key, { v: null, t: Date.now() }, CACHE_MAX);
+    }
+    return value;
+  }).finally(() => { if (inflight.get(key) === p) inflight.delete(key); });
   inflight.set(key, p);
   return p;
 }

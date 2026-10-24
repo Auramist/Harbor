@@ -1,6 +1,6 @@
 import { Check, Eye } from "lucide-react";
 import { HoverTooltip } from "@/components/hover-tooltip";
-import { useMemo } from "react";
+import { useMemo, useCallback } from "react";
 import { DragStrip } from "@/components/drag-strip";
 import { Poster } from "@/components/poster";
 import type { Meta } from "@/lib/cinemeta";
@@ -54,40 +54,39 @@ export function AnimeEpisodeStrip({
   const { settings } = useSettings();
   const t = useT();
 
-  const gridEpisodes = useMemo<GridEpisode[]>(
-    () =>
-      episodes.map((ep) => {
-        const epMeta = metaForEp ? metaForEp(ep) : meta;
-        return {
-          key: String(ep.id),
-          number: ep.number,
-          season: animeSeasonKey(ep),
-          absoluteNumber: ep.absoluteNumber,
-          seasonLabel: showSeason ? `S${ep.imdbSeason ?? ep.seasonNumber ?? 1}` : undefined,
-          title: ep.title || t("Episode {n}", { n: ep.number }),
-          stills: [ep.thumbnail, ep.thumbnailFallback, meta.background].filter((u): u is string => !!u),
-          runtime: ep.length,
-          airDate: ep.airdate,
-          overview: ep.synopsis || undefined,
-          rating: ep.rating ?? undefined,
-          ratingIsImdb: ep.rating != null ? !!ep.ratingIsImdb : false,
-          filler: ep.filler,
-          upcoming: isUpcomingDate(ep.airdate) || (!!unairedIds && unairedIds.has(ep.id)),
-          meta: epMeta,
-          sourceMetaId: ep.sourceMetaId,
-          play: (opts) =>
-            openPicker(
-              epMeta,
-              animePlayEpisode(ep),
-              { autoPlay: settings.instantPlay, resume: opts?.resume },
-            ),
-          openDetail: () => {
-            const target = resolveAnimeDetailTarget(ep, meta, epMeta);
-            openEpisodeDetail(target.seriesId, target.season, target.episode, target.seriesMeta, target.playback);
-          },
-        };
-      }),
-    [episodes, meta, metaForEp, openEpisodeDetail, openPicker, settings.instantPlay, t, showSeason, unairedIds],
+  const presentEpisode = useCallback(
+    (ep: KitsuEpisode): GridEpisode => {
+      const epMeta = metaForEp ? metaForEp(ep) : meta;
+      return {
+        key: String(ep.id),
+        number: ep.number,
+        season: animeSeasonKey(ep),
+        absoluteNumber: ep.absoluteNumber,
+        seasonLabel: showSeason ? `S${ep.imdbSeason ?? ep.seasonNumber ?? 1}` : undefined,
+        title: ep.title || t("Episode {n}", { n: ep.number }),
+        stills: [ep.thumbnail, ep.thumbnailFallback, meta.background].filter((u): u is string => !!u),
+        runtime: ep.length,
+        airDate: ep.airdate,
+        overview: ep.synopsis || undefined,
+        rating: ep.rating ?? undefined,
+        ratingIsImdb: ep.rating != null ? !!ep.ratingIsImdb : false,
+        filler: ep.filler,
+        upcoming: isUpcomingDate(ep.airdate) || (!!unairedIds && unairedIds.has(ep.id)),
+        meta: epMeta,
+        sourceMetaId: ep.sourceMetaId,
+        play: (opts) =>
+          openPicker(
+            epMeta,
+            animePlayEpisode(ep),
+            { autoPlay: settings.instantPlay, resume: opts?.resume },
+          ),
+        openDetail: () => {
+          const target = resolveAnimeDetailTarget(ep, meta, epMeta);
+          openEpisodeDetail(target.seriesId, target.season, target.episode, target.seriesMeta, target.playback);
+        },
+      };
+    },
+    [meta, metaForEp, openEpisodeDetail, openPicker, settings.instantPlay, t, showSeason, unairedIds],
   );
   const epByKey = useMemo(() => {
     const m = new Map<string, KitsuEpisode>();
@@ -99,7 +98,9 @@ export function AnimeEpisodeStrip({
     return (
       <EpisodeGrid
         meta={meta}
-        episodes={gridEpisodes}
+        episodes={episodes}
+        present={presentEpisode}
+        itemKey={(ep) => String(ep.id)}
         progressFor={(g) => progressFor(epByKey.get(g.key)!)}
         spoilerFor={spoilerFor ? (g) => spoilerFor(epByKey.get(g.key)!) : undefined}
         onContextMenu={onContextMenu}

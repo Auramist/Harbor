@@ -1,3 +1,5 @@
+import { mediaCacheGeneration, episodeCacheTtl } from "./media-cache";
+import { effectiveTmdbLanguage } from "./providers/tmdb/tmdb-client";
 /**
  * Unified episode data fetcher
  * Orchestrates fetching episode details from cache → TMDB → Cinemeta fallback
@@ -57,7 +59,7 @@ async function extractTmdbId(
  * Fetch episode data with multi-tier fallback strategy
  * 
  * Priority order:
- * 1. Cache (24-hour TTL)
+ * 1. Cache (12-hour TTL)
  * 2. TMDB API (if API key available and TMDB ID extractable)
  * 3. Cinemeta (fallback for basic data)
  * 
@@ -77,7 +79,9 @@ export async function fetchEpisodeData(
   selectedEpisode?: PlayEpisode,
 ): Promise<EpisodeDetail | null> {
   // 1. Check cache first (fastest path)
-  const cached = getCachedEpisode(seriesId, season, episode);
+  const generation = mediaCacheGeneration();
+  const cacheScope = `${settings.tmdbKey}:${effectiveTmdbLanguage()}`;
+  const cached = getCachedEpisode(seriesId, season, episode, cacheScope);
   if (cached) {
     return cached;
   }
@@ -97,7 +101,7 @@ export async function fetchEpisodeData(
         
         if (tmdbData) {
           // Cache successful TMDB fetch
-          cacheEpisode(seriesId, season, episode, tmdbData);
+          if (generation === mediaCacheGeneration()) cacheEpisode(seriesId, season, episode, tmdbData, cacheScope, episodeCacheTtl([tmdbData]));
           return tmdbData;
         }
       }
@@ -140,7 +144,7 @@ export async function fetchEpisodeData(
       
       // Cache Cinemeta data with shorter TTL (1 hour) since it has limited info
       // This allows it to be replaced if TMDB data becomes available later
-      cacheEpisode(seriesId, season, episode, completeData);
+      if (generation === mediaCacheGeneration()) cacheEpisode(seriesId, season, episode, completeData, cacheScope, 60 * 60_000);
       return completeData;
     }
   } catch (cinemetaError) {

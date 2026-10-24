@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import { createObjectUrlCache } from "./object-url-cache";
 import { invoke } from "@tauri-apps/api/core";
 import { suwayomiAuthFor } from "@/lib/manga/sources/suwayomi/auth-registry";
 import { useSettings } from "@/lib/settings";
-import { idbCacheGet, idbCacheSet, idbCacheDelete, idbCacheKeys } from "@/lib/idb-cache";
+import { idbCacheGet, idbCacheDelete, idbCacheKeys } from "@/lib/idb-cache";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -44,7 +45,8 @@ export function needsImageProxy(url: string): boolean {
   }
 }
 
-const blobCache = new Map<string, string>();
+const blobCache = createObjectUrlCache();
+type BlobEntry = NonNullable<ReturnType<typeof blobCache.get>>;
 // Module scoped, like the blob cache beside it. A failure used to live in
 // component state, so every remount re-invoked harbor_fetch for a url already
 // known to be dead, and each of those is a bridge crossing carrying a base64
@@ -55,13 +57,11 @@ function isDead(url: string): boolean {
   deadUrls.delete(url);
   return false;
 }
-const inflight = new Map<string, Promise<string | null>>();
-// Keys written through the thumbnail path, so "clear poster cache" can drop
-// exactly those entries without disturbing other proxied images.
-const thumbKeys = new Set<string>();
+const inflight = new Map<string, Promise<BlobEntry | null>>();
+// Legacy poster blobs share a database with pinned music; only this prefix is disposable.
 const POSTER_PREFIX = "season-poster:v1:";
 const POSTER_TTL = 7 * 24 * 60 * 60_000;
-let posterWrites = 0;
+let legacyPruned = false;
 let pruning: Promise<void> | undefined;
 let cacheGeneration = 0;
 
@@ -87,8 +87,8 @@ function prunePosters(): void {
 
 export async function clearThumbCache(): Promise<void> {
   cacheGeneration++;
-  for (const key of thumbKeys) blobCache.delete(key);
-  thumbKeys.clear();
+  blobCache.clear();
+  inflight.clear();
   deadUrls.clear();
   const keys = (await idbCacheKeys()).filter((key) => key.startsWith(POSTER_PREFIX));
   await Promise.all(keys.map(idbCacheDelete));
@@ -111,29 +111,28 @@ function proxyImage(
   url: string,
   thumbWidthPx?: number,
   persistent = false,
-): Promise<string | null> {
+  migrateLegacy = true,
+): Promise<BlobEntry | null> {
   const generation = cacheGeneration;
   const key = cacheKeyFor(url, thumbWidthPx);
   const cached = blobCache.get(key);
   if (cached) return Promise.resolve(cached);
-  if (isDead(url)) return Promise.resolve(null);
+  if (isDead(key)) return Promise.resolve(null);
   const existing = inflight.get(key);
   if (existing) return existing;
   const p = (async () => {
     try {
       const auth = suwayomiAuthFor(url);
-      const diskKey = `${POSTER_PREFIX}${key}`;
+      const diskKey = `${POSTER_PREFIX}${thumbWidthPx ?? 0}\n${url}`;
       const persist = persistent && !auth;
-      if (persist) {
-        if (posterWrites++ % 32 === 0) prunePosters();
+      if (persist && migrateLegacy) {
+        if (!legacyPruned) { legacyPruned = true; prunePosters(); }
         const entry = await Promise.resolve()
           .then(() => idbCacheGet(diskKey))
           .catch(() => null);
         if (generation !== cacheGeneration) return null;
         if (entry && Date.now() - entry.at < POSTER_TTL && entry.data instanceof Blob) {
-          const created = URL.createObjectURL(entry.data);
-          blobCache.set(key, created);
-          thumbKeys.add(key);
+          const created = blobCache.set(key, entry.data);
           return created;
         }
       }
@@ -146,36 +145,39 @@ function proxyImage(
           headers: auth ? { authorization: auth } : undefined,
           allowLocalNetwork: Boolean(auth),
           thumbWidthPx,
+          cacheImage: persist,
+          maxResponseBytes: 32 * 1024 * 1024,
         },
       });
       if (!resp.ok) throw new Error(`status ${resp.status}`);
       if (generation !== cacheGeneration) return null;
+      if (persistent && typeof window !== "undefined") window.__harborProfiler?.mark("image-cache", { result: resp.headers?.["x-harbor-image-cache"] ?? "bypass" });
       const type = resp.headers?.["content-type"] || resp.contentType || "image/jpeg";
       if (type && !type.startsWith("image/")) throw new Error(`type ${type}`);
       const blob = new Blob([base64ToBytes(resp.body)], { type });
-      const created = URL.createObjectURL(blob);
-      blobCache.set(key, created);
-      if (thumbWidthPx != null || persist) thumbKeys.add(key);
-      if (persist) void idbCacheSet(diskKey, { at: Date.now(), data: blob }).catch(() => {});
+      const control = resp.headers?.["cache-control"] ?? "";
+      const age = resp.headers?.["x-harbor-image-max-age"] ?? /(?:^|,)\s*max-age="?(\d+)/i.exec(control)?.[1];
+      const ttl = /(?:^|,)\s*(?:no-store|no-cache|private)(?:,|$)/i.test(control) ? 0 : age !== undefined ? Number(age) * 1000 : undefined;
+      const created = blobCache.set(key, blob, Number.isFinite(ttl) ? ttl : undefined);
       return created;
     } catch {
       if (generation !== cacheGeneration) return null;
-      deadUrls.set(url, Date.now() + 60_000);
+      deadUrls.set(key, Date.now() + 60_000);
       while (deadUrls.size > 300) deadUrls.delete(deadUrls.keys().next().value!);
       return null;
-    } finally {
-      inflight.delete(key);
     }
-  })();
+  })().finally(() => {
+    if (inflight.get(key) === p) inflight.delete(key);
+  });
   inflight.set(key, p);
   return p;
 }
 
-const cacheKeyFor = (url: string, thumbWidthPx?: number): string => `${thumbWidthPx ?? 0}\n${url}`;
+const cacheKeyFor = (url: string, thumbWidthPx?: number): string => `${thumbWidthPx ?? 0}\n${suwayomiAuthFor(url) ?? ""}\n${url}`;
 
 export function useProxiedImageSrc(
   url: string | undefined,
-  opts?: { forceProxy?: boolean; persistent?: boolean },
+  opts?: { forceProxy?: boolean; persistent?: boolean; enabled?: boolean; originalSize?: boolean },
 ): string | undefined {
   const need =
     isTauri &&
@@ -186,15 +188,15 @@ export function useProxiedImageSrc(
   const { settings } = useSettings();
   const persistent = opts?.persistent === true;
   const thumbWidthPx =
-    settings.posterQuality === "max" ? undefined : settings.posterQuality === "high" ? 600 : 400;
+    opts?.originalSize || settings.posterQuality === "max" ? undefined : settings.posterQuality === "high" ? 600 : 400;
   const imageKey = cacheKeyFor(url ?? "", thumbWidthPx);
   const [blob, setBlob] = useState<{ key: string; src: string } | undefined>(() => {
     const cached = url && need ? blobCache.get(imageKey) : undefined;
-    return cached ? { key: imageKey, src: cached } : undefined;
+    return cached ? { key: imageKey, src: cached.src } : undefined;
   });
-  const [failed, setFailed] = useState(() => (url && need && isDead(url) ? imageKey : undefined));
+  const [failed, setFailed] = useState(() => (url && need && isDead(imageKey) ? imageKey : undefined));
   useEffect(() => {
-    if (!url || !need) {
+    if (!url || !need || opts?.enabled === false) {
       setFailed(undefined);
       setBlob(undefined);
       return;
@@ -202,10 +204,10 @@ export function useProxiedImageSrc(
     const cached = blobCache.get(cacheKeyFor(url, thumbWidthPx));
     if (cached) {
       setFailed(undefined);
-      setBlob({ key: imageKey, src: cached });
-      return;
+      setBlob((previous) => previous?.key === imageKey && previous.src === cached.src ? previous : { key: imageKey, src: cached.src });
+      return blobCache.retain(cached);
     }
-    if (isDead(url)) {
+    if (isDead(imageKey)) {
       setBlob(undefined);
       setFailed(imageKey);
       return;
@@ -213,15 +215,22 @@ export function useProxiedImageSrc(
     setFailed(undefined);
     setBlob(undefined);
     let alive = true;
-    void proxyImage(url, thumbWidthPx, persistent).then((created) => {
+    const generation = cacheGeneration;
+    let release: (() => void) | undefined;
+    void proxyImage(url, thumbWidthPx, persistent, !opts?.originalSize).then((created) => {
       if (!alive) return;
-      if (created) setBlob({ key: imageKey, src: created });
+      if (created && !created.retired && generation === cacheGeneration) {
+        release = blobCache.retain(created);
+        setBlob({ key: imageKey, src: created.src });
+      }
       else setFailed(imageKey);
     });
     return () => {
       alive = false;
+      release?.();
     };
-  }, [url, need, thumbWidthPx, persistent]);
+  }, [url, imageKey, need, thumbWidthPx, persistent, opts?.enabled, opts?.originalSize]);
+  if (opts?.enabled === false) return undefined;
   if (!need) return url;
   // Loading -> undefined (caller shows its placeholder/shimmer). Failed -> the
   // original url so the <img> errors and the caller's fallback/plate logic runs.

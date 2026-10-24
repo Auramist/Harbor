@@ -1,3 +1,4 @@
+import { onMediaCacheClear, mediaCacheGeneration } from "@/lib/media-cache";
 import type { Meta } from "@/lib/cinemeta";
 import { aniZipByKitsu } from "@/lib/providers/anizip";
 import {
@@ -373,6 +374,8 @@ const detailInflight = new Map<
   }
 >();
 
+onMediaCacheClear(() => { detailCache.clear(); detailInflight.clear(); });
+
 export function animeDetails(
   settings: Settings,
   meta: Meta,
@@ -409,6 +412,7 @@ export function animeDetails(
     }
     return shared.promise;
   }
+  const generation = mediaCacheGeneration();
   const listeners = new Set<EpisodeSubscriber>(onEpisodesReady ? [onEpisodesReady] : []);
   const pending: NonNullable<ReturnType<typeof detailInflight.get>> = {
     listeners,
@@ -417,7 +421,7 @@ export function animeDetails(
       for (const listener of listeners) publish(listener, episodes, kitsuId);
     })
       .then((result) => {
-        if (!result || result.episodes.length === 0) return result;
+        if (!result || result.episodes.length === 0 || generation !== mediaCacheGeneration()) return result;
         const entry = { expires: Date.now() + 30_000, value: result };
         detailCache.set(key, entry);
         while (detailCache.size > 16) detailCache.delete(detailCache.keys().next().value!);
@@ -436,7 +440,7 @@ export function animeDetails(
         return result;
       })
       .finally(() => {
-        detailInflight.delete(key);
+        if (detailInflight.get(key) === pending) detailInflight.delete(key);
         listeners.clear();
       }),
   };

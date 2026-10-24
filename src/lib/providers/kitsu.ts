@@ -5,6 +5,7 @@ import { safeFetch } from "@/lib/safe-fetch";
 import { adultContentHidden } from "@/lib/addons-store/adult-filter";
 import { episodeTextLanguage } from "@/lib/episode-text-language";
 import { createRequestScheduler } from "@/lib/request-scheduler";
+import { cachedMedia, metadataCacheTtl, onMediaCacheClear, mediaCacheGeneration } from "@/lib/media-cache";
 
 const KITSU = "https://kitsu.io/api/edge";
 
@@ -66,6 +67,7 @@ const cache = new Map<string, { v: unknown; t: number }>();
 const TTL = 30 * 60 * 1000;
 const CACHE_MAX = 300;
 const requests = createRequestScheduler({ concurrency: 4 });
+onMediaCacheClear(() => cache.clear());
 
 registerEvictable("kitsu", (aggressive) => {
   if (aggressive) return cache.clear();
@@ -77,7 +79,8 @@ async function get<T>(path: string): Promise<T | null> {
   const url = `${KITSU}${path}`;
   const hit = cache.get(url);
   if (hit && Date.now() - hit.t < TTL) return hit.v as T;
-  return requests.schedule(url, async () => {
+  const generation = mediaCacheGeneration();
+  return cachedMedia<T>("kitsu-resource", [url], () => requests.schedule(url, async () => {
     try {
       const r = await safeFetch(url, {
         headers: { Accept: "application/vnd.api+json" },
@@ -86,12 +89,12 @@ async function get<T>(path: string): Promise<T | null> {
       if (r.status === 429) requests.pauseFor(1000);
       if (!r.ok) return null;
       const j = (await r.json()) as T;
-      lruSet(cache, url, { v: j, t: Date.now() }, CACHE_MAX);
+      if (generation === mediaCacheGeneration()) lruSet(cache, url, { v: j, t: Date.now() }, CACHE_MAX);
       return j;
     } catch {
       return null;
     }
-  });
+  }), { ttl: metadataCacheTtl });
 }
 
 export type KitsuEpisode = {

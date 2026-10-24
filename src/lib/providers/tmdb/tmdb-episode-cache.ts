@@ -4,19 +4,22 @@
  */
 
 import { lruSet } from "@/lib/cache";
+import { onMediaCacheClear, MEDIA_TTL } from "@/lib/media-cache";
 import type { EpisodeDetail, EpisodeCacheEntry } from "./tmdb-episode-types";
 
-const CACHE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
+const CACHE_DURATION_MS = MEDIA_TTL.episodes; // 12 hours
 const MAX_CACHE_SIZE = 100; // Maximum number of cached episodes
 
+const expiry = new Map<string, number>();
 const episodeCache = new Map<string, EpisodeCacheEntry>();
+onMediaCacheClear(() => { episodeCache.clear(); expiry.clear(); });
 
 /**
  * Generate cache key for an episode
  * Format: episode:${seriesId}:${season}:${episode}
  */
-function getCacheKey(seriesId: string, season: number, episode: number): string {
-  return `episode:${seriesId}:${season}:${episode}`;
+function getCacheKey(seriesId: string, season: number, episode: number, scope: string): string {
+  return `episode:${scope}:${seriesId}:${season}:${episode}`;
 }
 
 /**
@@ -27,15 +30,16 @@ export function getCachedEpisode(
   seriesId: string,
   season: number,
   episode: number,
+  scope = "",
 ): EpisodeDetail | null {
-  const key = getCacheKey(seriesId, season, episode);
+  const key = getCacheKey(seriesId, season, episode, scope);
   const cached = episodeCache.get(key);
   
   if (!cached) return null;
   
   // Check if cache entry has expired
   const age = Date.now() - cached.timestamp;
-  if (age > CACHE_DURATION_MS) {
+  if (age > (expiry.get(key) ?? CACHE_DURATION_MS)) {
     episodeCache.delete(key);
     return null;
   }
@@ -52,8 +56,10 @@ export function cacheEpisode(
   season: number,
   episode: number,
   data: EpisodeDetail,
+  scope = "",
+  ttl = CACHE_DURATION_MS,
 ): void {
-  const key = getCacheKey(seriesId, season, episode);
+  const key = getCacheKey(seriesId, season, episode, scope);
   const entry: EpisodeCacheEntry = {
     data,
     timestamp: Date.now(),
@@ -62,6 +68,8 @@ export function cacheEpisode(
   
   // Use LRU set to handle eviction automatically
   lruSet(episodeCache, key, entry, MAX_CACHE_SIZE);
+  for (const held of expiry.keys()) if (!episodeCache.has(held)) expiry.delete(held);
+  expiry.set(key, ttl);
 }
 
 /**
@@ -70,6 +78,7 @@ export function cacheEpisode(
  */
 export function clearEpisodeCache(): void {
   episodeCache.clear();
+  expiry.clear();
 }
 
 /**

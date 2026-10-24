@@ -12,6 +12,7 @@ function load(path, dependencies, globals = {}) {
   const code = ts.transpileModule(readFileSync(new URL(`../${path}`, import.meta.url), "utf8"), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
+  dependencies = { "@/lib/media-cache": { onMediaCacheClear() {}, mediaCacheGeneration: () => 0 }, ...dependencies };
   const module = { exports: {} };
   vm.runInNewContext(code, {
     module,
@@ -45,6 +46,7 @@ function kitsuFixture(fetch) {
       "src/lib/providers/kitsu.ts",
       {
         "@/lib/cache": cache,
+        "@/lib/media-cache": { cachedMedia: (_namespace, _scope, loader) => loader(), metadataCacheTtl: () => 12 * 60 * 60_000, onMediaCacheClear() {}, mediaCacheGeneration: () => 0 },
         "@/lib/request-scheduler": scheduler,
         "@/lib/maintenance": { registerEvictable: () => {} },
         "@/lib/safe-fetch": { safeFetch: fetch },
@@ -330,7 +332,7 @@ function imageFixture(disk, invoke, now, failStorage = false) {
           return [
             states[slot],
             (value) => {
-              states[slot] = value;
+              states[slot] = typeof value === "function" ? value(states[slot]) : value;
             },
           ];
         },
@@ -339,6 +341,7 @@ function imageFixture(disk, invoke, now, failStorage = false) {
       "@tauri-apps/api/core": { invoke },
       "@/lib/manga/sources/suwayomi/auth-registry": { suwayomiAuthFor: () => null },
       "@/lib/settings": { useSettings: () => ({ settings: { posterQuality: "high" } }) },
+      "./object-url-cache": load("src/lib/object-url-cache.ts", {}, { Blob, URL: { createObjectURL: () => "blob:cached-image", revokeObjectURL() {} }, setTimeout, Date: { now } }),
       "@/lib/idb-cache": {
         idbCacheGet: async (key) => {
           if (failStorage) throw new Error("disabled storage");
@@ -374,31 +377,22 @@ function imageFixture(disk, invoke, now, failStorage = false) {
   };
 }
 
-test("season poster bytes survive module remounts, expire, and respect clear-cache", async () => {
-  const disk = new Map();
-  let calls = 0;
-  let now = 1000;
-  const invoke = async (name) => {
-    if (name !== "harbor_fetch") return;
-    calls++;
+test("public poster requests opt into the native persistent cache and clearing removes legacy entries", async () => {
+  const disk = new Map([["season-poster:v1:old", { at: 0, data: new Blob(["old"]) }]]);
+  const calls = [];
+  const invoke = async (name, args) => {
+    calls.push({ name, args });
     return { ok: true, body: "aW1hZ2U=", contentType: "image/jpeg" };
   };
-  const first = imageFixture(disk, invoke, () => now);
+  const first = imageFixture(disk, invoke, () => 1000);
   first.render("https://artworks.thetvdb.com/season.jpg");
   await tick();
-  assert.equal(calls, 1);
-  assert.equal(disk.size, 1);
-  const second = imageFixture(disk, invoke, () => now);
-  second.render("https://artworks.thetvdb.com/season.jpg");
-  await tick();
-  assert.equal(calls, 1, "disk hit should skip the native HTTP request entirely");
-  now += 8 * 24 * 60 * 60_000;
-  const expired = imageFixture(disk, invoke, () => now);
-  expired.render("https://artworks.thetvdb.com/season.jpg");
-  await tick();
-  assert.equal(calls, 2);
-  await expired.clearThumbCache();
+  assert.equal(calls[0].args.args.cacheImage, true);
+  assert.equal(calls[0].args.args.maxResponseBytes, 32 * 1024 * 1024);
+  assert.equal(disk.size, 1, "new images are stored by the native cache");
+  await first.clearThumbCache();
   assert.equal(disk.size, 0);
+  assert.equal(calls.at(-1).name, "clear_thumb_cache");
 });
 
 test("unavailable poster storage falls back to fetching the image", async () => {

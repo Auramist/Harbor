@@ -2,6 +2,7 @@ import { safeFetch } from "@/lib/safe-fetch";
 import { createRequestScheduler } from "@/lib/request-scheduler";
 import { createCatalogCache, isCatalogPath } from "./tmdb-catalog-cache";
 import { lruSet } from "@/lib/cache";
+import { cachedMedia, metadataCacheTtl, MEDIA_TTL } from "@/lib/media-cache";
 
 export const TMDB = "https://api.themoviedb.org/3";
 export const IMG = "https://image.tmdb.org/t/p";
@@ -134,7 +135,14 @@ export async function get<T>(
     const data = await (shared as Promise<T | null>);
     return cacheable ? structuredClone(data) : data;
   }
-  const run = fetchWithRetry<T>(target, path);
+  // Only public title/season metadata belongs in the durable cache.
+  const metadata = /^(?:tv|movie)\/\d+(?:\/(?:season\/\d+(?:\/episode\/\d+)?(?:\/images)?|images|external_ids|translations))?$/.test(path);
+  const run = metadata
+    ? cachedMedia<T>("tmdb-resource", [target], () => fetchWithRetry<T>(target, path), { ttl: (value) => {
+      if (path.endsWith("/images") && !Object.values(value as Record<string, unknown>).some((field) => Array.isArray(field) && field.length > 0)) return MEDIA_TTL.recent;
+      return metadataCacheTtl(value);
+    } })
+    : fetchWithRetry<T>(target, path);
   tmdbInflight.set(target, run);
   try {
     const data = await run;

@@ -3,6 +3,7 @@ import { registerCache } from "@/lib/memory-profiler";
 import { safeFetch as tauriFetch } from "@/lib/safe-fetch";
 import { HARBOR_TVDB_BASE } from "@/lib/config/endpoints";
 import { episodeTextLanguage } from "@/lib/episode-text-language";
+import { cachedMedia, saveMedia, episodeCacheTtl, metadataCacheTtl, MEDIA_TTL, onMediaCacheClear, mediaCacheGeneration } from "@/lib/media-cache";
 
 const BASE = "https://api4.thetvdb.com/v4";
 const PROXY_V4 = `${HARBOR_TVDB_BASE}/api/tvdb/v4`;
@@ -136,10 +137,27 @@ const RESPONSE_CACHE_MAX = 200;
 const RESPONSE_TTL_MS = 10 * 60 * 1000;
 const responseCache = new Map<string, { t: number; v: unknown }>();
 const responseInflight = new Map<string, Promise<unknown>>();
+onMediaCacheClear(() => { responseCache.clear(); responseInflight.clear(); });
 
 registerCache("tvdb:response", () => responseCache.size);
 
 async function getJson<T>(apiKey: string, path: string): Promise<T | null> {
+  // Paginated catalogs are persisted only after every page succeeds.
+  if (path.includes("/episodes/")) return fetchJson<T>(apiKey, path);
+  return cachedMedia("tvdb-resource", [apiKey, path], () => fetchJson<T>(apiKey, path), {
+    ttl: (value) => {
+      if (!/\/seasons\//.test(path)) return metadataCacheTtl(value);
+      const season = value as { image?: string; artwork?: unknown[]; name?: string; overview?: string };
+      const populated = path.includes("/translations/")
+        ? !!(season.name?.trim() || season.overview?.trim())
+        : !!season.image || (Array.isArray(season.artwork) && season.artwork.length > 0);
+      return populated ? MEDIA_TTL.settled : MEDIA_TTL.recent;
+    },
+  });
+}
+
+async function fetchJson<T>(apiKey: string, path: string): Promise<T | null> {
+  const generation = mediaCacheGeneration();
   const useProxy = !apiKey;
   const key = JSON.stringify([apiKey, path]);
   const hit = responseCache.get(key);
@@ -147,54 +165,52 @@ async function getJson<T>(apiKey: string, path: string): Promise<T | null> {
   const existing = responseInflight.get(key);
   if (existing) return existing as Promise<T | null>;
   const p = (async (): Promise<T | null> => {
-    try {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        let url: string;
-        let headers: Record<string, string>;
-        if (useProxy) {
-          url = `${PROXY_V4}${path}`;
-          headers = { accept: "application/json" };
-        } else {
-          const token = await getToken(apiKey);
-          if (!token) return null;
-          url = `${BASE}${path}`;
-          headers = { authorization: `Bearer ${token}`, accept: "application/json" };
-        }
-        try {
-          const res = await tauriFetch(url, { headers });
-          if (!useProxy && res.status === 401) {
-            cachedToken = null;
-            try {
-              localStorage.removeItem(TOKEN_KEY);
-            } catch {
-              /* ignore */
-            }
-            if (attempt === 0) continue;
-            return null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let url: string;
+      let headers: Record<string, string>;
+      if (useProxy) {
+        url = `${PROXY_V4}${path}`;
+        headers = { accept: "application/json" };
+      } else {
+        const token = await getToken(apiKey);
+        if (!token) return null;
+        url = `${BASE}${path}`;
+        headers = { authorization: `Bearer ${token}`, accept: "application/json" };
+      }
+      try {
+        const res = await tauriFetch(url, { headers });
+        if (!useProxy && res.status === 401) {
+          cachedToken = null;
+          try {
+            localStorage.removeItem(TOKEN_KEY);
+          } catch {
+            /* ignore */
           }
-          if (res.status >= 500 && attempt === 0) {
-            await new Promise((r) => setTimeout(r, 350));
-            continue;
-          }
-          if (!res.ok) return null;
-          const j = (await res.json()) as { data?: T };
-          const data = (j?.data ?? null) as T | null;
-          if (data !== null)
-            lruSet(responseCache, key, { t: Date.now(), v: data }, RESPONSE_CACHE_MAX);
-          return data;
-        } catch {
-          if (attempt === 0) {
-            await new Promise((r) => setTimeout(r, 350));
-            continue;
-          }
+          if (attempt === 0) continue;
           return null;
         }
+        if (res.status >= 500 && attempt === 0) {
+          await new Promise((r) => setTimeout(r, 350));
+          continue;
+        }
+        if (!res.ok) return null;
+        const j = (await res.json()) as { data?: T };
+        const data = (j?.data ?? null) as T | null;
+        if (data !== null)
+          if (generation === mediaCacheGeneration()) lruSet(responseCache, key, { t: Date.now(), v: data }, RESPONSE_CACHE_MAX);
+        return data;
+      } catch {
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 350));
+          continue;
+        }
+        return null;
       }
-      return null;
-    } finally {
-      responseInflight.delete(key);
     }
-  })();
+    return null;
+  })().finally(() => {
+    if (responseInflight.get(key) === p) responseInflight.delete(key);
+  });
   responseInflight.set(key, p as Promise<unknown>);
   return p;
 }
@@ -595,6 +611,24 @@ export async function tvdbEpisodesByType(
   lang?: string,
 ): Promise<TvdbEpisode[]> {
   if (!seriesId) return [];
+  const generation = mediaCacheGeneration();
+  const episodes = await cachedMedia("tvdb-episodes", [apiKey, seriesId, seasonType, lang ?? "und"],
+    () => fetchEpisodesByType(apiKey, seriesId, seasonType, lang), {
+      ttl: (rows) => rows.length ? episodeCacheTtl(rows) : 60_000,
+      fallbackOnError: false,
+      valid: (rows) => Array.isArray(rows) && rows.every((row) => row && Number.isFinite(row.id) && Number.isFinite(row.number) && Number.isFinite(row.seasonNumber)),
+    });
+  if (!episodes) throw new Error("TVDB episode catalog unavailable");
+  if (!lang) await saveMedia("tvdb-availability", [apiKey, seriesId, seasonType], episodes.length > 0, { ttl: episodes.length ? MEDIA_TTL.episodes : 60_000 }, undefined, generation);
+  return episodes;
+}
+
+async function fetchEpisodesByType(
+  apiKey: string,
+  seriesId: number,
+  seasonType: string,
+  lang?: string,
+): Promise<TvdbEpisode[]> {
   const out: TvdbEpisode[] = [];
   const langSeg = lang ? `/${lang}` : "";
   for (let page = 0; page < 20; page++) {
@@ -602,15 +636,16 @@ export async function tvdbEpisodesByType(
       apiKey,
       `/series/${seriesId}/episodes/${seasonType}${langSeg}?page=${page}`,
     );
-    const arr = (data?.episodes ?? []) as any[];
-    if (arr.length === 0) break;
+    if (!data || !Array.isArray(data.episodes)) throw new Error("Incomplete TVDB episode catalog");
+    const arr = data.episodes as any[];
+    if (arr.length === 0) return out;
     for (const e of arr) {
-      if (typeof e.number !== "number") continue;
+      if (!e || !Number.isFinite(e.number) || !Number.isFinite(e.id)) throw new Error("Malformed TVDB episode row");
       out.push({
         id: e.id,
         number: e.number,
         seasonNumber: typeof e.seasonNumber === "number" ? e.seasonNumber : 0,
-        absoluteNumber: typeof e.absoluteNumber === "number" ? e.absoluteNumber : undefined,
+        absoluteNumber: typeof e.absoluteNumber === "number" && Number.isFinite(e.absoluteNumber) ? e.absoluteNumber : undefined,
         name: e.name,
         overview: e.overview,
         nameLanguage: lang
@@ -624,9 +659,9 @@ export async function tvdbEpisodesByType(
         image: tvdbImg(e.image),
       });
     }
-    if (arr.length < 500) break;
+    if (arr.length < 500) return out;
   }
-  return out;
+  throw new Error("TVDB episode pagination limit reached");
 }
 
 export async function tvdbOrderTypeHasEpisodes(
@@ -641,9 +676,10 @@ export async function tvdbOrderTypeHasEpisodes(
       : seasonType === "tvdbabsolute"
         ? "absolute"
         : seasonType;
-  const data = await getJson<any>(apiKey, `/series/${seriesId}/episodes/${slug}?page=0`);
-  const arr = (data?.episodes ?? []) as any[];
-  return arr.length > 0;
+  return (await cachedMedia("tvdb-availability", [apiKey, seriesId, slug], async () => {
+    const data = await getJson<any>(apiKey, `/series/${seriesId}/episodes/${slug}?page=0`);
+    return Array.isArray(data?.episodes) ? data.episodes.length > 0 : null;
+  }, { ttl: (available) => available ? MEDIA_TTL.episodes : 60_000 })) ?? false;
 }
 
 export async function tvdbEpisodesAbsolute(
@@ -651,32 +687,5 @@ export async function tvdbEpisodesAbsolute(
   seriesId: number,
   lang?: string,
 ): Promise<TvdbEpisode[]> {
-  if (!seriesId) return [];
-  const out: TvdbEpisode[] = [];
-  const langSeg = lang ? `/${lang}` : "";
-  for (let page = 0; page < 12; page++) {
-    const data = await getJson<any>(
-      apiKey,
-      `/series/${seriesId}/episodes/absolute${langSeg}?page=${page}`,
-    );
-    const arr = (data?.episodes ?? []) as any[];
-    if (arr.length === 0) break;
-    for (const e of arr) {
-      if (typeof e.number !== "number") continue;
-      out.push({
-        id: e.id,
-        number: e.number,
-        seasonNumber: typeof e.seasonNumber === "number" ? e.seasonNumber : 0,
-        absoluteNumber: typeof e.absoluteNumber === "number" ? e.absoluteNumber : undefined,
-        name: e.name,
-        overview: e.overview,
-        aired: e.aired,
-        runtime: e.runtime,
-        image: tvdbImg(e.image),
-        imdbId: undefined,
-      });
-    }
-    if (arr.length < 500) break;
-  }
-  return out;
+  return tvdbEpisodesByType(apiKey, seriesId, "absolute", lang);
 }

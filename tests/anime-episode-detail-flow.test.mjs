@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { memoryMediaCache } from "./helpers/media-cache.mjs";
 import { animePlayEpisode, resolveAnimeDetailTarget } from "../src/views/detail/anime-episodes/anime-season-key.ts";
 import { cinemetaEpisodeDetail } from "../src/lib/cinemeta-episode.ts";
 
@@ -33,6 +34,8 @@ const row = {
 function fetcher({ tmdb = null, canonical = null, fail = false } = {}) {
   const requests = [], writes = [];
   const { fetchEpisodeData } = load("../src/lib/episode-data-fetcher.ts", {
+    "./media-cache": memoryMediaCache(),
+    "./providers/tmdb/tmdb-client": { effectiveTmdbLanguage: () => "en" },
     "@/lib/cinemeta": { meta: async (type, id) => {
       requests.push({ type, id });
       if (fail) throw new Error("Provider unavailable");
@@ -137,7 +140,7 @@ test("both strip and grid information buttons pass the same playback payload as 
   const jsx = (type, props) => ({ type, props });
   const marker = (name) => name;
   const { AnimeEpisodeStrip } = load("../src/views/detail/anime-episode-strip.tsx", {
-    "react": { useMemo: (fn) => fn() },
+    "react": { useMemo: (fn) => fn(), useCallback: (fn) => fn },
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": { Check: marker("check"), Eye: marker("eye") },
     "@/components/hover-tooltip": { HoverTooltip: marker("tooltip") },
@@ -160,7 +163,8 @@ test("both strip and grid information buttons pass the same playback payload as 
   });
   const props = { meta: parent, episodes: [row], metaForEp: () => entry,
     progressFor: () => ({ ratio: 0, watched: false, startedAt: 0 }) };
-  const grid = AnimeEpisodeStrip({ ...props, layout: "grid" }).props.episodes[0];
+  const gridProps = AnimeEpisodeStrip({ ...props, layout: "grid" }).props;
+  const grid = gridProps.present(gridProps.episodes[0]);
   grid.play();
   grid.openDetail();
   const strip = AnimeEpisodeStrip({ ...props, layout: "strip" });

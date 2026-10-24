@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { memoryMediaCache } from "./helpers/media-cache.mjs";
 import * as episodeTextLanguage from "../src/lib/episode-text-language.ts";
 import * as tmdbTitleFallback from "../src/lib/providers/tmdb/tmdb-title-fallback.ts";
 import * as React from "react";
@@ -68,6 +69,7 @@ function providerFixture({
   const calls = [];
   const requests = [];
   const tvdb = load("src/lib/providers/tvdb.ts", {
+    "@/lib/media-cache": memoryMediaCache(),
     "@/lib/episode-text-language": episodeTextLanguage,
     "@/lib/cache": { lruSet: (map, key, value) => map.set(key, value) },
     "@/lib/memory-profiler": { registerCache: () => {} },

@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::http_redirect::same_origin;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, Semaphore, SemaphorePermit};
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 const BROWSER_UA: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
@@ -37,78 +37,6 @@ async fn run_with_deadline<T>(
         .unwrap_or_else(|_| Err(format!("timeout after {} ms", duration.as_millis())))
 }
 
-const THUMB_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
-const THUMB_CACHE_MAX_ENTRIES: usize = 256;
-
-struct ThumbEntry {
-    body: String,
-    bytes: usize,
-    last_used: u64,
-}
-
-struct ThumbCache {
-    entries: HashMap<String, ThumbEntry>,
-    total_bytes: usize,
-    clock: u64,
-}
-
-impl ThumbCache {
-    fn get(&mut self, key: &str) -> Option<String> {
-        self.clock = self.clock.wrapping_add(1);
-        let tick = self.clock;
-        self.entries.get_mut(key).map(|entry| {
-            entry.last_used = tick;
-            entry.body.clone()
-        })
-    }
-
-    fn insert(&mut self, key: String, body: String) {        let bytes = body.len();
-        if bytes > THUMB_CACHE_MAX_BYTES {
-            return;
-        }
-        if let Some(previous) = self.entries.remove(&key) {
-            self.total_bytes = self.total_bytes.saturating_sub(previous.bytes);
-        }
-        while self.entries.len() >= THUMB_CACHE_MAX_ENTRIES
-            || self.total_bytes.saturating_add(bytes) > THUMB_CACHE_MAX_BYTES
-        {
-            let oldest = self
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.last_used)
-                .map(|(k, _)| k.clone());
-            match oldest {
-                Some(k) => {
-                    if let Some(removed) = self.entries.remove(&k) {
-                        self.total_bytes = self.total_bytes.saturating_sub(removed.bytes);
-                    }
-                }
-                None => break,
-            }
-        }
-        self.clock = self.clock.wrapping_add(1);
-        let tick = self.clock;
-        self.total_bytes = self.total_bytes.saturating_add(bytes);
-        self.entries.insert(key, ThumbEntry { body, bytes, last_used: tick });
-    }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-        self.total_bytes = 0;
-    }
-}
-
-fn thumb_cache() -> &'static Mutex<ThumbCache> {
-    static CACHE: OnceLock<Mutex<ThumbCache>> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        Mutex::new(ThumbCache {
-            entries: HashMap::new(),
-            total_bytes: 0,
-            clock: 0,
-        })
-    })
-}
-
 fn make_thumb(bytes: &[u8], width: u32) -> Option<Vec<u8>> {
     if width == 0 {
         return None;
@@ -117,6 +45,13 @@ fn make_thumb(bytes: &[u8], width: u32) -> Option<Vec<u8>> {
     match format {
         image::ImageFormat::Jpeg | image::ImageFormat::Png | image::ImageFormat::WebP => {}
         _ => return None,
+    }
+    // Preserve animated images instead of flattening them to their first frame.
+    if bytes
+        .windows(4)
+        .any(|chunk| chunk == b"acTL" || chunk == b"ANIM")
+    {
+        return None;
     }
     let img = image::load_from_memory(bytes).ok()?;
     if img.width() <= width {
@@ -133,17 +68,17 @@ fn make_thumb(bytes: &[u8], width: u32) -> Option<Vec<u8>> {
         }
         image::ImageFormat::Png => {
             use image::ImageEncoder;
-            let rgb = small.to_rgb8();
+            let rgb = small.to_rgba8();
             let (w, h) = (rgb.width(), rgb.height());
             image::codecs::png::PngEncoder::new(&mut buf)
-                .write_image(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
+                .write_image(rgb.as_raw(), w, h, image::ExtendedColorType::Rgba8)
                 .ok()?;
         }
         _ => {
-            let rgb = small.to_rgb8();
+            let rgb = small.to_rgba8();
             let (w, h) = (rgb.width(), rgb.height());
             image::codecs::webp::WebPEncoder::new_lossless(&mut buf)
-                .encode(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
+                .encode(rgb.as_raw(), w, h, image::ExtendedColorType::Rgba8)
                 .ok()?;
         }
     }
@@ -158,57 +93,42 @@ async fn thumb_or_base64(
     url: &str,
     width: Option<u32>,
     bytes: &[u8],
+    persistence: Option<(u64, u64, Option<String>, Option<String>)>,
 ) -> String {
-    let encode_original = || base64::engine::general_purpose::STANDARD.encode(bytes);
-    let Some(w) = width.filter(|w| *w > 0) else {
-        return encode_original();
-    };
-    let key = format!("{w}\n{url}");
-    if let Some(hit) = thumb_cache().lock().await.get(&key) {
-        return hit;
-    }
-    let disk_app = app.clone();
-    let disk_url = url.to_string();
-    if let Some(disk) = tokio::task::spawn_blocking(move || {
-        crate::thumb_cache::read_thumb(&disk_app, &disk_url, w)
-    })
-    .await
-    .ok()
-    .flatten()
-    {
-        let body = base64::engine::general_purpose::STANDARD.encode(&disk);
-        thumb_cache().lock().await.insert(key, body.clone());
-        return body;
-    }
+    let w = width.unwrap_or(0);
     let owned = bytes.to_vec();
-    let made = tokio::task::spawn_blocking(move || make_thumb(&owned, w))
+    let output = tokio::task::spawn_blocking(move || make_thumb(&owned, w).unwrap_or(owned))
         .await
-        .ok()
-        .flatten();
-    match made {
-        Some(buf) => {
-            let body = base64::engine::general_purpose::STANDARD.encode(&buf);
-            let write_app = app.clone();
-            let write_url = url.to_string();
-            tokio::task::spawn_blocking(move || {
-                crate::thumb_cache::write_thumb(&write_app, &write_url, w, &buf);
+        .unwrap_or_else(|_| bytes.to_vec());
+    let body = base64::engine::general_purpose::STANDARD.encode(&output);
+    if let Some((lifetime, generation, etag, modified)) = persistence {
+        if let Ok(format) = image::guess_format(&output) {
+            let image = crate::thumb_cache::CachedImage {
+                bytes: output,
+                content_type: format.to_mime_type().to_string(),
+                etag,
+                modified,
+                fresh: true,
+                max_age: lifetime,
+                lifetime,
+            };
+            let app = app.clone();
+            let url = url.to_string();
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::thumb_cache::write_thumb(&app, &url, w, &image, lifetime, generation)
             })
-            .await
-            .ok();
-            thumb_cache().lock().await.insert(key, body.clone());
-            body
+            .await;
         }
-        None => encode_original(),
     }
+    body
 }
 
 #[tauri::command]
 pub async fn clear_thumb_cache(app: tauri::AppHandle) -> Result<(), String> {
-    thumb_cache().lock().await.clear();
     let app = app.clone();
     tokio::task::spawn_blocking(move || crate::thumb_cache::clear_thumb_dir(&app))
         .await
-        .map_err(|error| format!("clear: {error}"))?;
+        .map_err(|error| format!("clear: {error}"))??;
     Ok(())
 }
 
@@ -480,6 +400,7 @@ pub struct HarborFetchArgs {
     pub allow_local_network: Option<bool>,
     pub follow_redirects: Option<bool>,
     pub thumb_width_px: Option<u32>,
+    pub cache_image: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -499,13 +420,15 @@ pub async fn harbor_fetch(
     args: HarborFetchArgs,
 ) -> Result<HarborFetchResponse, String> {
     let timeout = Duration::from_millis(args.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+    let image_generation = crate::thumb_cache::generation();
     let _permit = acquire_fetch_permit().await?;
-    run_with_deadline(timeout, harbor_fetch_inner(app, args)).await
+    run_with_deadline(timeout, harbor_fetch_inner(app, args, image_generation)).await
 }
 
 async fn harbor_fetch_inner(
     app: tauri::AppHandle,
     args: HarborFetchArgs,
+    image_generation: u64,
 ) -> Result<HarborFetchResponse, String> {
     let timeout = Duration::from_millis(args.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
     let public_network_only = args.public_network_only.unwrap_or(false);
@@ -517,7 +440,9 @@ async fn harbor_fetch_inner(
         reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| format!("method: {}", e))?;
 
     let mut current_url = reqwest::Url::parse(&args.url).map_err(|e| format!("url: {}", e))?;
-    validate_target(&current_url, allow_local_network).await?;
+    if !args.cache_image.unwrap_or(false) {
+        validate_target(&current_url, allow_local_network).await?;
+    }
 
     let mut subtitle_credential = args
         .credential_handle
@@ -577,6 +502,67 @@ async fn harbor_fetch_inner(
         headers.push(("Accept-Language".to_string(), "en-US,en;q=0.9".to_string()));
     }
 
+    let cache_image = args.cache_image.unwrap_or(false)
+        && method == "GET"
+        && args.response_type.as_deref() == Some("base64")
+        && !allow_local_network
+        && !public_network_only
+        && subtitle_credential.is_none()
+        && args.body.is_none()
+        && args.body_base64.is_none()
+        && !headers.iter().any(|(name, _)| {
+            matches!(
+                name.to_ascii_lowercase().as_str(),
+                "authorization" | "cookie" | "x-api-key"
+            )
+        });
+    let mut cached_image = None;
+    if cache_image {
+        let disk_app = app.clone();
+        let disk_url = args.url.clone();
+        let width = args.thumb_width_px.unwrap_or(0);
+        cached_image = tokio::task::spawn_blocking(move || {
+            crate::thumb_cache::read_thumb(&disk_app, &disk_url, width)
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some(hit) = cached_image.as_ref() {
+            if hit.fresh
+                && args
+                    .max_response_bytes
+                    .is_none_or(|limit| hit.bytes.len() as u64 <= limit)
+            {
+                return Ok(HarborFetchResponse {
+                    status: 200,
+                    ok: true,
+                    body: base64::engine::general_purpose::STANDARD.encode(&hit.bytes),
+                    content_type: Some(hit.content_type.clone()),
+                    headers: HashMap::from([
+                        ("content-type".to_string(), hit.content_type.clone()),
+                        ("x-harbor-image-cache".to_string(), "hit".to_string()),
+                        (
+                            "x-harbor-image-max-age".to_string(),
+                            hit.max_age.to_string(),
+                        ),
+                    ]),
+                    url: Some(args.url.clone()),
+                });
+            }
+            if let Some(etag) = &hit.etag {
+                headers.push(("If-None-Match".to_string(), etag.clone()));
+            }
+            if let Some(modified) = &hit.modified {
+                headers.push(("If-Modified-Since".to_string(), modified.clone()));
+            }
+        }
+    }
+
+    // Cached bytes need no DNS lookup. Outbound image requests keep the same
+    // target validation as other HTTP requests, including conditional refreshes.
+    if args.cache_image.unwrap_or(false) {
+        validate_target(&current_url, allow_local_network).await?;
+    }
     let mut body = match args.body_base64 {
         Some(value) => Some(
             base64::engine::general_purpose::STANDARD
@@ -689,7 +675,94 @@ async fn harbor_fetch_inner(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    let response_headers = collect_headers(res.headers());
+    let mut response_headers = collect_headers(res.headers());
+    if status == 304 {
+        if let Some(mut hit) = cached_image {
+            if args
+                .max_response_bytes
+                .is_some_and(|limit| hit.bytes.len() as u64 > limit)
+            {
+                return Err("response size limit exceeded".to_string());
+            }
+            let body = base64::engine::general_purpose::STANDARD.encode(&hit.bytes);
+            hit.etag = response_headers.get("etag").cloned().or(hit.etag);
+            hit.modified = response_headers
+                .get("last-modified")
+                .cloned()
+                .or(hit.modified);
+            let content_type = hit.content_type.clone();
+            let freshness = hit.revalidated_lifetime(
+                response_headers.get("cache-control").map(String::as_str),
+            );
+            if let Some(lifetime) = freshness {
+                let app = app.clone();
+                let url = args.url.clone();
+                let width = args.thumb_width_px.unwrap_or(0);
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::thumb_cache::write_thumb(
+                        &app,
+                        &url,
+                        width,
+                        &hit,
+                        lifetime,
+                        image_generation,
+                    )
+                })
+                .await;
+            } else {
+                let app = app.clone();
+                let url = args.url.clone();
+                let width = args.thumb_width_px.unwrap_or(0);
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::thumb_cache::remove_thumb(&app, &url, width, image_generation)
+                }).await;
+            }
+            return Ok(HarborFetchResponse {
+                status: 200,
+                ok: true,
+                body,
+                content_type: Some(content_type.clone()),
+                headers: HashMap::from([
+                    ("content-type".to_string(), content_type),
+                    (
+                        "x-harbor-image-cache".to_string(),
+                        "revalidated".to_string(),
+                    ),
+                    (
+                        "x-harbor-image-max-age".to_string(),
+                        freshness.unwrap_or(0).to_string(),
+                    ),
+                ]),
+                url: Some(args.url.clone()),
+            });
+        }
+    }
+    let persistence = if cache_image
+        && ok
+        && content_type
+            .as_deref()
+            .is_some_and(|kind| kind.starts_with("image/"))
+    {
+        crate::thumb_cache::image_lifetime(
+            response_headers.get("cache-control").map(String::as_str),
+        )
+        .map(|lifetime| {
+            (
+                lifetime,
+                image_generation,
+                response_headers.get("etag").cloned(),
+                response_headers.get("last-modified").cloned(),
+            )
+        })
+    } else {
+        None
+    };
+    if cache_image {
+        response_headers.insert("x-harbor-image-cache".to_string(), "miss".to_string());
+        if let Some((lifetime, ..)) = persistence.as_ref() {
+            response_headers.insert("x-harbor-image-max-age".to_string(), lifetime.to_string());
+        }
+    }
     let final_url = res.url().to_string();
     let body = if let Some(max_bytes) = args.max_response_bytes {
         if res.content_length().is_some_and(|size| size > max_bytes) {
@@ -707,13 +780,15 @@ async fn harbor_fetch_inner(
             bytes.extend_from_slice(&chunk);
         }
         if args.response_type.as_deref() == Some("base64") {
-            thumb_or_base64(&app, &final_url, args.thumb_width_px, &bytes).await
+            thumb_or_base64(&app, &args.url, args.thumb_width_px, &bytes, persistence).await
         } else {
             String::from_utf8_lossy(&bytes).into_owned()
         }
     } else if args.response_type.as_deref() == Some("base64") {
         match res.bytes().await {
-            Ok(bytes) => thumb_or_base64(&app, &final_url, args.thumb_width_px, &bytes).await,
+            Ok(bytes) => {
+                thumb_or_base64(&app, &args.url, args.thumb_width_px, &bytes, persistence).await
+            }
             Err(_) => String::new(),
         }
     } else {
