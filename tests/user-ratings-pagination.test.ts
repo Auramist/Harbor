@@ -14,13 +14,20 @@ function deferred() {
 }
 
 const counts = { total: 300, movie: 100, series: 120, anime: 60, manga: 20 };
-const page = (ids: string[], nextCursor?: string, totals = counts, scores?: number[]) => ({
+const page = (
+  ids: string[],
+  nextCursor?: string,
+  totals = counts,
+  scores?: number[],
+  reviews: (string | undefined)[] = [],
+) => ({
   items: ids.map((itemKey, i) => ({
     itemKey,
     title: itemKey,
     mediaType: "movie",
     score: scores?.[i] ?? 8,
     at: "2026-01-01",
+    review: reviews[i],
   })),
   nextCursor,
   counts: totals,
@@ -78,12 +85,19 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
     job: ReturnType<typeof deferred>;
   }> = [];
   const jsx = (type: any, props: any, key: any) => ({ type, props, key });
-  const rates: Array<{ itemKey: string; score: number }> = [];
+  const rates: Array<{ itemKey: string; score: number; review?: string }> = [];
   const mocks: Record<string, any> = {
     react,
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "react-dom": { createPortal: (child: any) => child },
-    "lucide-react": { Eye: "eye", Loader2: "loader", X: "x" },
+    "lucide-react": {
+      ChevronDown: "chevron-down",
+      ChevronUp: "chevron-up",
+      Eye: "eye",
+      Loader2: "loader",
+      MessageSquare: "message-square",
+      X: "x",
+    },
     "@/lib/ratings/poster": {},
     "@/components/poster": {},
     "@/components/ratings/rating-stars": {},
@@ -94,8 +108,9 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
     "@/lib/i18n": { useT: () => (value: string) => value },
     "@/components/icons/search-icon": { Search: "search" },
     "@/lib/ratings/actions": {
-      rate(target: any, score: number) {
-        rates.push({ itemKey: target.itemKey, score });
+      REVIEW_MAX: 4000,
+      rate(target: any, score: number, extra: any) {
+        rates.push({ itemKey: target.itemKey, score, review: extra?.review });
         return options.failRate ? Promise.reject(new Error("fixture offline")) : Promise.resolve();
       },
       unrate() {
@@ -169,11 +184,6 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
     assert.ok(found, "missing search input");
     return found;
   }
-  function select() {
-    const found = nodes(tree).find((n) => n.type === "select");
-    assert.ok(found, "missing sort select");
-    return found;
-  }
   async function settle() {
     for (let i = 0; i < 8; i++) await Promise.resolve();
     render();
@@ -196,15 +206,26 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
       input().props.onChange({ target: { value } });
       render();
     },
-    order(value: string) {
-      select().props.onChange({ target: { value } });
+    order(which: string) {
+      const target =
+        which === "default"
+          ? nodes(tree).find(
+              (n) => n.props?.["aria-pressed"] === true && n.props?.["aria-label"] !== undefined,
+            )
+          : nodes(tree).find(
+              (n) =>
+                n.props?.["aria-label"] ===
+                (which === "high" ? "Highest rated first" : "Lowest rated first"),
+            );
+      assert.ok(target, `missing ordering control for ${which}`);
+      target.props.onClick();
       render();
     },
-    async editRow(itemKey: string, score: number) {
+    async submitRow(itemKey: string, score: number, review?: string) {
       const row = nodes(tree).find((n) => n.props?.r?.itemKey === itemKey);
       assert.ok(row, `missing row ${itemKey}`);
       assert.ok(row.props.onRate, "row is not editable");
-      row.props.onRate(row.props.r, score);
+      row.props.onRate(row.props.r, score, review);
       render();
       await settle();
     },
@@ -447,8 +468,8 @@ test("the profile owner can change a score in place and it is saved", async () =
   const h = ratingsHarness();
   await h.resolve(0, page(["alpha", "beta"]));
   h.render({ isOwner: true });
-  await h.editRow("alpha", 4);
-  assert.deepEqual(h.rates(), [{ itemKey: "alpha", score: 4 }]);
+  await h.submitRow("alpha", 4);
+  assert.deepEqual(h.rates(), [{ itemKey: "alpha", score: 4, review: undefined }]);
   assert.equal(h.rows().find((n) => n.props.r.itemKey === "alpha")?.props.r.score, 4);
   assert.equal(h.rows().find((n) => n.props.r.itemKey === "beta")?.props.r.score, 8);
 });
@@ -457,7 +478,7 @@ test("a rejected quick edit rolls the row back to the saved score", async () => 
   const h = ratingsHarness({ failRate: true });
   await h.resolve(0, page(["alpha"]));
   h.render({ isOwner: true });
-  await h.editRow("alpha", 3);
+  await h.submitRow("alpha", 3);
   assert.equal(h.rows()[0]?.props.r.score, 8, "a failed save must not look saved");
 });
 
@@ -469,4 +490,47 @@ test("ordering holds the list until every page is loaded so the order never chur
   assert.ok(h.bodyText().includes("Loading all ratings"));
   await h.resolve(1, page(["c"], undefined, counts, [7]));
   assert.deepEqual(h.ids(), ["b", "c", "a"], "the settled order is shown once");
+});
+
+test("an owner edit saves the review text alongside the score", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["alpha"], undefined, counts, [8], ["first watch"]));
+  h.render({ isOwner: true });
+  await h.submitRow("alpha", 6, "second watch");
+  assert.deepEqual(h.rates(), [{ itemKey: "alpha", score: 6, review: "second watch" }]);
+  assert.equal(h.rows()[0]?.props.r.score, 6);
+  assert.equal(h.rows()[0]?.props.r.review, "second watch");
+});
+
+test("clearing the review text sends it as absent rather than blank", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["alpha"], undefined, counts, [8], ["first watch"]));
+  h.render({ isOwner: true });
+  await h.submitRow("alpha", 8, "   ");
+  assert.deepEqual(h.rates(), [{ itemKey: "alpha", score: 8, review: undefined }]);
+  assert.equal(h.rows()[0]?.props.r.review, undefined);
+});
+
+test("the review filter walks the whole list and keeps only ratings with a review", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["a", "b"], "cursor-1", counts, undefined, [undefined, "loved it"]));
+  assert.deepEqual(h.ids(), ["a", "b"], "the filter is off by default");
+  h.click("With review");
+  assert.deepEqual(h.requests[1].opts, { type: "all", cursor: "cursor-1" });
+  await h.resolve(1, page(["c", "d"], undefined, counts, undefined, ["also good", undefined]));
+  assert.deepEqual(h.ids(), ["b", "c"]);
+});
+
+test("the review filter and a query apply together", async () => {
+  const h = ratingsHarness();
+  await h.resolve(
+    0,
+    page(["alpha", "beta"], undefined, counts, undefined, ["seen it", "seen it too"]),
+  );
+  h.type("beta");
+  assert.deepEqual(h.ids(), ["beta"]);
+  h.click("With review");
+  assert.deepEqual(h.ids(), ["beta"]);
+  h.type("alpha");
+  assert.deepEqual(h.ids(), ["alpha"]);
 });

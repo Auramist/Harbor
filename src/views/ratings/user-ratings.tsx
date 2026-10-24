@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRatingPoster } from "@/lib/ratings/poster";
 import { createPortal } from "react-dom";
-import { Eye, Loader2, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Eye, Loader2, MessageSquare, X } from "lucide-react";
 import { Search } from "@/components/icons/search-icon";
 import { Poster } from "@/components/poster";
 import { RatingStars } from "@/components/ratings/rating-stars";
-import { rate } from "@/lib/ratings/actions";
+import { rate, REVIEW_MAX } from "@/lib/ratings/actions";
 import { useT } from "@/lib/i18n";
 import { fetchUserRatings } from "@/lib/social/ratings-api";
 import type { PublicRating, RatingCounts } from "@/lib/ratings/types";
@@ -26,6 +26,12 @@ const EMPTY_COUNTS: RatingCounts = { movie: 0, series: 0, anime: 0, manga: 0, to
 
 /** Ordering reads the whole list, so it needs every page loaded first. */
 type SortMode = "default" | "high" | "low";
+
+const SORT_LABELS: Record<SortMode, string> = {
+  default: "Default order",
+  high: "Highest rated",
+  low: "Lowest rated",
+};
 
 type RatingsRequest = {
   handle: string;
@@ -57,6 +63,7 @@ export function UserRatings({
   const [more, setMore] = useState(false);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<SortMode>("default");
+  const [reviewsOnly, setReviewsOnly] = useState(false);
   const [loadingAll, setLoadingAll] = useState(false);
   const cursorRef = useRef<string | undefined>(undefined);
   const seen = useRef<string | null>(null);
@@ -137,9 +144,9 @@ export function UserRatings({
   }, [cursor, handle, type]);
 
   const needle = q.trim().toLowerCase();
-  // Searching and ordering both read the whole list rather than one page of it,
-  // so either one finishes the pagination before the list is presented.
-  const walkAll = needle.length > 0 || sort !== "default";
+  // Searching, ordering and the review filter all read the whole list rather than
+  // one page of it, so any of them finishes the pagination before presenting it.
+  const walkAll = needle.length > 0 || sort !== "default" || reviewsOnly;
 
   // Walking the remaining cursor chain covers the whole ratings list instead of
   // the pages already on screen. It shares the tab's request identity, so a tab
@@ -181,27 +188,35 @@ export function UserRatings({
   // appearing as they are found is the point of it.
   const holdForOrder = loadingAll && sort !== "default";
 
-  const filtered = needle ? items.filter((r) => r.title.toLowerCase().includes(needle)) : items;
+  const filtered = items.filter(
+    (r) =>
+      (!needle || r.title.toLowerCase().includes(needle)) && (!reviewsOnly || Boolean(r.review)),
+  );
   const visible =
     sort === "default"
       ? filtered
       : [...filtered].sort((a, b) => (sort === "high" ? b.score - a.score : a.score - b.score));
 
-  const changeScore = useCallback(async (r: PublicRating, score: number) => {
-    if (score === r.score) return;
-    const previous = r.score;
-    setItems((list) => list.map((x) => (x.itemKey === r.itemKey ? { ...x, score } : x)));
+  const changeRating = useCallback(async (r: PublicRating, score: number, review?: string) => {
+    const nextReview = review?.trim() || undefined;
+    if (score === r.score && nextReview === r.review) return;
+    const previous = { score: r.score, review: r.review };
+    setItems((list) =>
+      list.map((x) => (x.itemKey === r.itemKey ? { ...x, score, review: nextReview } : x)),
+    );
     try {
       await rate(
         { itemKey: r.itemKey, mediaType: r.mediaType, title: r.title, poster: r.posterUrl },
         score,
-        { review: r.review, spoiler: r.spoiler },
+        { review: nextReview, spoiler: r.spoiler },
       );
     } catch {
-      // A rejected edit must not leave the row claiming a score the server never took.
+      // A rejected edit must not leave the row claiming a rating the server never took.
       if (!request.current?.controller.signal.aborted) {
         setItems((list) =>
-          list.map((x) => (x.itemKey === r.itemKey ? { ...x, score: previous } : x)),
+          list.map((x) =>
+            x.itemKey === r.itemKey ? { ...x, score: previous.score, review: previous.review } : x,
+          ),
         );
       }
     }
@@ -268,16 +283,50 @@ export function UserRatings({
               </button>
             );
           })}
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as SortMode)}
-            aria-label={t("Sort ratings")}
-            className="ms-auto h-8 rounded-full border border-edge bg-canvas ps-3 pe-2 text-[12.5px] font-medium text-ink-muted outline-none transition-colors hover:bg-elevated hover:text-ink focus:border-ink-subtle"
-          >
-            <option value="default">{t("Default order")}</option>
-            <option value="high">{t("Highest rated")}</option>
-            <option value="low">{t("Lowest rated")}</option>
-          </select>
+          <div className="ms-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setReviewsOnly((v) => !v)}
+              aria-pressed={reviewsOnly}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium ring-1 transition-colors ${
+                reviewsOnly
+                  ? "bg-ink/10 text-ink ring-ink/25"
+                  : "text-ink-muted ring-edge-soft hover:bg-elevated hover:text-ink"
+              }`}
+            >
+              <MessageSquare size={13} strokeWidth={2.2} />
+              {t("With review")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSort((s) => (s === "high" ? "default" : "high"))}
+              aria-pressed={sort === "high"}
+              aria-label={t("Highest rated first")}
+              className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+                sort === "high"
+                  ? "bg-ink text-canvas"
+                  : "text-ink-subtle hover:bg-elevated hover:text-ink"
+              }`}
+            >
+              <ChevronUp size={15} strokeWidth={2.4} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setSort((s) => (s === "low" ? "default" : "low"))}
+              aria-pressed={sort === "low"}
+              aria-label={t("Lowest rated first")}
+              className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+                sort === "low"
+                  ? "bg-ink text-canvas"
+                  : "text-ink-subtle hover:bg-elevated hover:text-ink"
+              }`}
+            >
+              <ChevronDown size={15} strokeWidth={2.4} />
+            </button>
+            <span className="ms-1 text-[12.5px] font-medium text-ink-muted">
+              {t(SORT_LABELS[sort])}
+            </span>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-7 py-6">
@@ -302,7 +351,7 @@ export function UserRatings({
                   key={r.itemKey}
                   r={r}
                   onOpenMeta={onOpenMeta}
-                  onRate={isOwner ? changeScore : undefined}
+                  onRate={isOwner ? changeRating : undefined}
                 />
               ))}
               {loadingAll ? (
@@ -339,11 +388,14 @@ function RatingRow({
 }: {
   r: PublicRating;
   onOpenMeta?: (metaId: string, kind?: string, hint?: { name?: string; poster?: string }) => void;
-  onRate?: (r: PublicRating, score: number) => void;
+  onRate?: (r: PublicRating, score: number, review?: string) => void;
 }) {
   const t = useT();
   const [revealed, setRevealed] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [draftScore, setDraftScore] = useState(r.score);
+  const [draftReview, setDraftReview] = useState(r.review ?? "");
+  const [hoverScore, setHoverScore] = useState(0);
   const poster = useRatingPoster(r.itemKey, r.mediaType, r.title, r.posterUrl);
   const media = useProfileTitle(r.itemKey, r.title, poster, r.mediaType);
   const open = onOpenMeta
@@ -387,36 +439,75 @@ function RatingRow({
           </button>
           <span className="shrink-0 text-[12px] tabular-nums text-ink-subtle">{timeAgo(r.at)}</span>
         </div>
-        <div className="mt-1 flex items-center gap-2">
-          {editing ? (
-            // Revealed deliberately: RatingStars commits on pointer-down, so an
-            // always-live row would let a stray click rewrite a real rating.
-            <RatingStars
-              value={r.score}
-              size={16}
-              ariaLabel={t("Change rating")}
-              onChange={(n) => {
-                setEditing(false);
-                onRate?.(r, n);
-              }}
+        {editing ? (
+          // Edit mode holds a draft and commits nothing until Save, because
+          // RatingStars reports on pointer-down and a stray click must not
+          // rewrite a real rating.
+          <div className="mt-2 flex flex-col gap-2.5">
+            <div className="flex items-center gap-2">
+              <RatingStars
+                value={draftScore}
+                size={16}
+                ariaLabel={t("Change rating")}
+                onChange={setDraftScore}
+                onHover={setHoverScore}
+              />
+              <span className="text-[12px] font-bold tabular-nums text-ink">
+                {hoverScore || draftScore}/10
+              </span>
+            </div>
+            <textarea
+              value={draftReview}
+              onChange={(e) => setDraftReview(e.target.value.slice(0, REVIEW_MAX))}
+              placeholder={t("Share your thoughts (optional)")}
+              rows={3}
+              className="w-full resize-y rounded-xl bg-canvas/60 p-3 text-[13.5px] leading-relaxed text-ink outline-none ring-1 ring-edge-soft placeholder:text-ink-subtle focus-visible:ring-2 focus-visible:ring-ink/30"
             />
-          ) : (
-            <>
-              <RatingStars value={r.score} readOnly size={14} />
-              <span className="text-[12px] font-bold tabular-nums text-ink">{r.score}/10</span>
-              {onRate && (
-                <button
-                  type="button"
-                  onClick={() => setEditing(true)}
-                  className="rounded-full border border-edge px-2.5 py-0.5 text-[11.5px] font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
-                >
-                  {t("Edit")}
-                </button>
-              )}
-            </>
-          )}
-        </div>
-        {r.review && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditing(false);
+                  onRate?.(r, draftScore, draftReview);
+                }}
+                disabled={draftScore === r.score && draftReview.trim() === (r.review ?? "")}
+                className="inline-flex h-9 items-center justify-center rounded-full bg-ink px-5 text-[13px] font-semibold text-canvas transition-transform hover:scale-[1.01] active:scale-[0.98] disabled:opacity-40"
+              >
+                {t("Save changes")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDraftScore(r.score);
+                  setDraftReview(r.review ?? "");
+                  setEditing(false);
+                }}
+                className="inline-flex h-9 items-center justify-center rounded-full border border-edge px-4 text-[13px] font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
+              >
+                {t("Cancel")}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-1 flex items-center gap-2">
+            <RatingStars value={r.score} readOnly size={14} />
+            <span className="text-[12px] font-bold tabular-nums text-ink">{r.score}/10</span>
+            {onRate && (
+              <button
+                type="button"
+                onClick={() => {
+                  setDraftScore(r.score);
+                  setDraftReview(r.review ?? "");
+                  setEditing(true);
+                }}
+                className="rounded-full border border-edge px-2.5 py-0.5 text-[11.5px] font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
+              >
+                {t("Edit")}
+              </button>
+            )}
+          </div>
+        )}
+        {!editing && r.review && (
           <div className="relative mt-2">
             <p
               className={`whitespace-pre-line text-[13.5px] leading-relaxed text-ink-muted ${
