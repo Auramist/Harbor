@@ -44,20 +44,26 @@ pub fn install_features() -> InstallFeatures {
     let disabled = disabled_features();
     let on = |key: &str| !disabled.iter().any(|off| off == key);
     InstallFeatures {
-        plugins: on("plugins"),
-        games: on("games"),
+        plugins: cfg!(feature = "plugins") && on("plugins"),
+        games: cfg!(feature = "games") && on("games"),
         music: cfg!(feature = "music") && on("music"),
         ebook: on("ebook"),
         manga: on("manga"),
     }
 }
 
+#[cfg(all(desktop, feature = "plugins"))]
 pub(crate) fn require_plugins() -> Result<(), String> {
     if install_features().plugins {
         Ok(())
     } else {
         Err("Plugins are disabled for this installation. Use Modify installation in Settings to enable them.".into())
     }
+}
+
+#[cfg(desktop)]
+pub(crate) fn games_enabled() -> bool {
+    install_features().games
 }
 
 #[cfg(desktop)]

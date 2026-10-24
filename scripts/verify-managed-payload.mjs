@@ -10,11 +10,20 @@ assert.equal(read("installer/src-tauri/payload/version.txt").toString().trim(), 
 const payload = read("installer/src-tauri/payload/harbor-payload.zip");
 const experimentalCore = process.env.HARBOR_MUSIC_CORE_EXE;
 const musicBinary = "components/music/harbor-music-module.exe";
+const extensionsBinary = "capstan/harbor-extensions-module.exe";
+const extensionsManifest = "capstan/extensions-module.json";
 const entries = unzipSync(payload, {
   filter: ({ name }) => {
     const canonical = name.replaceAll("\\", "/");
-    return canonical === "harbor.exe" || canonical === "uninstall.exe" ||
-      canonical === musicBinary || canonical.startsWith("variants/");
+    return (
+      canonical === "harbor.exe" ||
+      canonical === "uninstall.exe" ||
+      canonical === musicBinary ||
+      canonical === extensionsBinary ||
+      canonical === extensionsManifest ||
+      canonical === "capstan/capstan.jar" ||
+      canonical.startsWith("variants/")
+    );
   },
 });
 const canonicalEntries = Object.fromEntries(
@@ -24,7 +33,9 @@ assert.ok(canonicalEntries["harbor.exe"], "Missing Harbor Core executable");
 assert.ok(canonicalEntries["uninstall.exe"], "Missing uninstaller");
 assert.equal(
   hash(canonicalEntries["harbor.exe"]),
-  hash(experimentalCore ? readFileSync(experimentalCore) : read("src-tauri/target/release/harbor.exe")),
+  hash(
+    experimentalCore ? readFileSync(experimentalCore) : read("src-tauri/target/release/harbor.exe"),
+  ),
   "Stale or wrong Harbor Core payload",
 );
 assert.equal(
@@ -32,8 +43,29 @@ assert.equal(
   hash(read("installer/src-tauri/target/release/harbor-uninstall.exe")),
   "Stale uninstaller payload",
 );
-assert.ok(!Object.keys(canonicalEntries).some((name) => name.startsWith("variants/")),
-  "A second Harbor executable variant was accidentally embedded");
+assert.ok(
+  !Object.keys(canonicalEntries).some((name) => name.startsWith("variants/")),
+  "A second Harbor executable variant was accidentally embedded",
+);
+if (canonicalEntries["capstan/capstan.jar"]) {
+  assert.ok(canonicalEntries[extensionsBinary], "Optional native Extensions module is missing");
+  assert.ok(canonicalEntries[extensionsManifest], "Extensions module manifest is missing");
+  const manifest = JSON.parse(Buffer.from(canonicalEntries[extensionsManifest]).toString("utf8"));
+  assert.equal(manifest.kind, "harbor-extensions");
+  assert.equal(manifest.abi, 2);
+  assert.equal(manifest.version, version);
+  assert.equal(manifest.target, "x86_64-pc-windows-msvc");
+  assert.equal(
+    hash(canonicalEntries[extensionsBinary]),
+    manifest.sha256,
+    "Extensions module checksum mismatch",
+  );
+  assert.equal(
+    hash(canonicalEntries[extensionsBinary]),
+    hash(read("src-tauri/resources/capstan/harbor-extensions-module.exe")),
+    "Stale Extensions module payload",
+  );
+}
 if (experimentalCore) {
   assert.ok(canonicalEntries[musicBinary], "Optional native Music module is missing");
   assert.equal(

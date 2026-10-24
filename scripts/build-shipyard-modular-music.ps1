@@ -33,7 +33,7 @@ if (-not $SkipCore) {
   try {
     $env:CARGO_TARGET_DIR = $coreDir
     Run 'cargo' @('build', '--manifest-path', 'src-tauri/Cargo.toml', '--locked',
-      '--release', '--no-default-features', '--features', 'music,music-sidecar,tauri/custom-protocol',
+      '--release', '--no-default-features', '--features', 'games,plugins,music,music-sidecar,tauri/custom-protocol',
       '--bin', 'harbor')
   } finally {
     $env:CARGO_TARGET_DIR = $oldTarget

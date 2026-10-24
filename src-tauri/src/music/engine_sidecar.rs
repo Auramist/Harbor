@@ -278,8 +278,8 @@ impl MusicEngine {
     }
 
     pub fn shutdown(&self){
-        let _=module(json!({"command":"mpv_stop","deck":0}));
-        let _=module(json!({"command":"mpv_stop","deck":1}));
+        // music::shutdown drops the existing native host after this call.
+        // Do not start a previously unused Music module merely to stop it.
     }
 
     pub async fn deck_play(&self,app:AppHandle,index:usize,stream:MusicStream,

@@ -44,7 +44,7 @@ export async function installNativeArchive(
   const path = await join(dir, fileName);
   await writeFile(path, bytes);
   try {
-    const answer = await invoke<InstallAnswer>("capstan_install", { path });
+    const answer = await invoke<InstallAnswer>("native_module_call", { module: "extensions", command: "capstan_install", args: { path } });
     forgetBridgeProviders();
     return refFrom(answer ?? {}, path);
   } catch (e) {
@@ -57,6 +57,6 @@ export async function installNativeArchive(
 
 export async function uninstallNativeExtension(extensionId: string): Promise<void> {
   if (!extensionsSupported()) return;
-  await invoke("capstan_uninstall", { id: extensionId });
+  await invoke("native_module_call", { module: "extensions", command: "capstan_uninstall", args: { id: extensionId } });
   forgetBridgeProviders();
 }

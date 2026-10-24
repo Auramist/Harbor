@@ -1481,6 +1481,31 @@ mod feature_selection_tests {
     }
 
     #[test]
+    fn removing_extensions_preserves_the_existing_user_data() {
+        let root = std::env::temp_dir().join(format!("harbor-extensions-preservation-{}-{}",
+            std::process::id(), std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let install = root.join("installed");
+        let data = root.join("AppData/app.harbor/capstan");
+        fs::create_dir_all(install.join("capstan/runtime/bin")).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(install.join("harbor.exe"), b"core").unwrap();
+        for file in ["harbor-extensions-module.exe", "extensions-module.json", "capstan.jar", "runtime/bin/java.exe"] {
+            fs::write(install.join("capstan").join(file), b"component").unwrap();
+            assert!(!entry_allowed(&Path::new("capstan").join(file), &keys(&["plugins"])));
+            assert!(entry_allowed(&Path::new("capstan").join(file), &[]));
+        }
+        fs::write(data.join("existing-extension-data"), b"preserved").unwrap();
+        prune_disabled(&install, &keys(&["plugins"]));
+        assert!(!install.join("capstan/harbor-extensions-module.exe").exists());
+        assert!(!install.join("capstan/capstan.jar").exists());
+        assert!(!install.join("capstan/runtime/bin/java.exe").exists());
+        assert_eq!(fs::read(install.join("harbor.exe")).unwrap(), b"core");
+        assert_eq!(fs::read(data.join("existing-extension-data")).unwrap(), b"preserved");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn optional_components_follow_their_keys() {
         assert!(!entry_allowed(Path::new("capstan/capstan.jar"), &keys(&["plugins"])));
         assert!(entry_allowed(Path::new("capstan/capstan.jar"), &keys(&["games"])));

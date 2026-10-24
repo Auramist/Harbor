@@ -16,12 +16,17 @@ struct NativeMusicHost {
 impl NativeMusicHost {
     fn start(path: &Path) -> Result<Self, String> {
         use std::process::{Command, Stdio};
-        let mut child = Command::new(path)
-            .arg("--serve")
+        let mut command = Command::new(path);
+        command.arg("--serve")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn().map_err(|error| error.to_string())?;
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let mut child = command.spawn().map_err(|error| error.to_string())?;
         let stderr = child.stderr.take().ok_or("Music host event pipe unavailable")?;
         let event_app = MUSIC_EVENT_APP.get().cloned();
         std::thread::spawn(move || {
