@@ -1707,6 +1707,7 @@ pub fn run() {
             mpv::mpv_command,
             mpv::mpv_set_property,
             mpv::mpv_get_property,
+            mpv::mpv_get_property_list,
             mpv::mpv_vo_passes,
             mpv::mpv_audio_devices,
             mpv::mpv_set_geometry,

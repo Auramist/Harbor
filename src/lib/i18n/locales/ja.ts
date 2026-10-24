@@ -90,6 +90,7 @@ import chrome from "./ja/chrome";
 import common from "./ja/common";
 import controllers from "./ja/controllers";
 import coverage from "./ja/coverage";
+import subtitles from "./ja/subtitles";
 import detail from "./ja/detail";
 import discover from "./ja/discover";
 import downloads from "./ja/downloads";
@@ -298,6 +299,7 @@ const ja: Record<string, string> = {
 
   ...ebookSources,
   ...coverage,
+  ...subtitles,
   ...sweep,
   ...wired,
   ...gap,

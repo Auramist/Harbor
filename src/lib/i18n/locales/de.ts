@@ -116,6 +116,7 @@ import awards from "./de/awards";
 import bpSources from "./de/bp-sources";
 import together from "./de/together";
 import coverage from "./de/coverage";
+import subtitles from "./de/subtitles";
 import plugins from "./de/plugins";
 import brands from "./de/brands";
 import bpSports from "./de/bp-sports";
@@ -335,6 +336,7 @@ const de: Record<string, string> = {
   ...bpSources,
   ...together,
   ...coverage,
+  ...subtitles,
   ...settingsRefinements,
   ...plugins,
   ...brands,

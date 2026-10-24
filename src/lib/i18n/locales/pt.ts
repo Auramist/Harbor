@@ -83,6 +83,7 @@ import ebookSources from "./pt/ebook-sources";
 import settingsRefinements from "./pt/settings-refinements";
 import experimentalUpdates from "./pt/experimental-updates";
 import coverage from "./pt/coverage";
+import subtitles from "./pt/subtitles";
 import chrome from "./pt/chrome";
 import common from "./pt/common";
 import catalog from "./pt/catalog";
@@ -302,6 +303,7 @@ const pt: Record<string, string> = {
 
   ...ebookSources,
   ...coverage,
+  ...subtitles,
   ...chrome,
   ...common,
   ...catalog,
