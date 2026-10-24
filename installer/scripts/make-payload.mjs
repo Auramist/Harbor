@@ -17,8 +17,12 @@ const UNINSTALLER_CEILING = 60 * 1048576;
 const BUILD_UNINSTALLER =
   'cd installer/src-tauri && cargo build --release --no-default-features --bin harbor-uninstall';
 
+const experimentalCore = process.env.HARBOR_MUSIC_CORE_EXE;
+if (experimentalCore && process.env.HARBOR_MUSIC_MODULE_EXPERIMENTAL !== '1') {
+  throw new Error('Alternate Harbor Music Core is allowed only in experimental module packaging');
+}
 const FILES = [
-  [join(APP, 'target', 'release', 'harbor.exe'), 'harbor.exe'],
+  [experimentalCore ? resolve(experimentalCore) : join(APP, 'target', 'release', 'harbor.exe'), 'harbor.exe'],
   [join(APP, 'THIRD-PARTY-NOTICES.txt'), 'notices'],
   [join(APP, 'binaries', 'mpv-x86_64-pc-windows-msvc.exe'), 'mpv.exe'],
   [join(APP, 'binaries', 'ffmpeg-x86_64-pc-windows-msvc.exe'), 'ffmpeg.exe'],
@@ -140,7 +144,36 @@ if (pokemonStaged) {
   console.error('SHIPPING WITHOUT THE GAME ENGINE: no engine staged at ' + POKEMON);
 }
 
+// A genuine Music module will be staged here once its native interface is
+// extracted from the core. Never package a placeholder or another Harbor build.
+const musicModule = join(APP, 'resources', 'music-module');
 const appVersion = JSON.parse(readFileSync(join(APP, 'tauri.conf.json'), 'utf8')).version;
+if (existsSync(musicModule)) {
+  // Only a dedicated experimental sidecar Core build may stage an experimental
+  // Music module: the regular full Harbor executable already embeds Music.
+  if (!experimentalCore) {
+    throw new Error('A staged Music module requires HARBOR_MUSIC_CORE_EXE (one Music-free core)');
+  }
+  // The component host is not wired into harbor.exe yet. Refuse accidental
+  // release of a seemingly installable but non-functional DLL.
+  if (process.env.HARBOR_MUSIC_MODULE_EXPERIMENTAL !== '1') {
+    throw new Error('Music runtime loading is not implemented; refusing to ship the staged module');
+  }
+  const manifestPath = join(musicModule, 'music-module.json');
+  const libraryPath = join(musicModule, 'harbor-music-module.exe');
+  if (!existsSync(manifestPath) || !existsSync(libraryPath)) {
+    throw new Error('Music module is incomplete; expected music-module.json and harbor-music-module.exe');
+  }
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
+  if (manifest.version !== appVersion || manifest.abi !== 1 || manifest.kind !== 'harbor-music') {
+    throw new Error('Music module has an incompatible version, ABI or type');
+  }
+  const staged = join(STAGE, 'components', 'music');
+  mkdirSync(dirname(staged), { recursive: true });
+  cpSync(musicModule, staged, { recursive: true });
+  total += treeBytes(musicModule);
+}
+
 if (!appVersion) {
   console.error('Cannot read version from src-tauri/tauri.conf.json');
   process.exit(1);

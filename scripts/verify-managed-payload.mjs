@@ -8,15 +8,39 @@ const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const version = JSON.parse(read("src-tauri/tauri.conf.json")).version;
 assert.equal(read("installer/src-tauri/payload/version.txt").toString().trim(), version);
 const payload = read("installer/src-tauri/payload/harbor-payload.zip");
+const experimentalCore = process.env.HARBOR_MUSIC_CORE_EXE;
+const musicBinary = "components/music/harbor-music-module.exe";
 const entries = unzipSync(payload, {
-  filter: ({ name }) => name === "harbor.exe" || name === "uninstall.exe",
+  filter: ({ name }) => {
+    const canonical = name.replaceAll("\\", "/");
+    return canonical === "harbor.exe" || canonical === "uninstall.exe" ||
+      canonical === musicBinary || canonical.startsWith("variants/");
+  },
 });
-for (const [name, path] of [
-  ["harbor.exe", "src-tauri/target/release/harbor.exe"],
-  ["uninstall.exe", "installer/src-tauri/target/release/harbor-uninstall.exe"],
-]) {
-  assert.ok(entries[name], "Missing payload entry: " + name);
-  assert.equal(hash(entries[name]), hash(read(path)), "Stale payload entry: " + name);
+const canonicalEntries = Object.fromEntries(
+  Object.entries(entries).map(([name, bytes]) => [name.replaceAll("\\", "/"), bytes]),
+);
+assert.ok(canonicalEntries["harbor.exe"], "Missing Harbor Core executable");
+assert.ok(canonicalEntries["uninstall.exe"], "Missing uninstaller");
+assert.equal(
+  hash(canonicalEntries["harbor.exe"]),
+  hash(experimentalCore ? readFileSync(experimentalCore) : read("src-tauri/target/release/harbor.exe")),
+  "Stale or wrong Harbor Core payload",
+);
+assert.equal(
+  hash(canonicalEntries["uninstall.exe"]),
+  hash(read("installer/src-tauri/target/release/harbor-uninstall.exe")),
+  "Stale uninstaller payload",
+);
+assert.ok(!Object.keys(canonicalEntries).some((name) => name.startsWith("variants/")),
+  "A second Harbor executable variant was accidentally embedded");
+if (experimentalCore) {
+  assert.ok(canonicalEntries[musicBinary], "Optional native Music module is missing");
+  assert.equal(
+    hash(canonicalEntries[musicBinary]),
+    hash(read("src-tauri/resources/music-module/harbor-music-module.exe")),
+    "Music module in payload is stale",
+  );
 }
 if (process.argv.includes("--embedded")) {
   const installer = read("installer/src-tauri/target/release/harbor-shipyard.exe");

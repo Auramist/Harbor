@@ -1,4 +1,4 @@
-#[cfg(desktop)]
+#[cfg(all(desktop, feature = "music"))]
 mod ytmusic;
 // Modules that build on every target, desktop and Android alike. Nothing in
 // here may reach a `#[cfg(desktop)]` tauri API: every Window setter (show,
@@ -78,6 +78,8 @@ mod discord_rp;
 #[cfg(desktop)]
 mod display_fit;
 #[cfg(desktop)]
+mod ytdlp_update;
+#[cfg(all(desktop, feature = "music"))]
 mod dj_deck;
 #[cfg(desktop)]
 mod dlna;
@@ -111,7 +113,7 @@ mod mpv_render_linux;
 mod mpv_render_mac;
 #[cfg(desktop)]
 mod multiview;
-#[cfg(desktop)]
+#[cfg(all(desktop, feature = "music"))]
 mod music;
 #[cfg(desktop)]
 mod pip;
@@ -185,6 +187,7 @@ pub(crate) fn shutdown_services(app: &tauri::AppHandle) {
     thumbs::shutdown(app);
     multiview::shutdown(app);
     dvr::shutdown(app);
+    #[cfg(feature = "music")]
     music::shutdown(app);
     stream_proxy::shutdown(app);
     cast_server::stop();
@@ -212,6 +215,7 @@ fn desktop_invoke_handler<F>(
 where
     F: Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static,
 {
+    let music_enabled = install_features::music_enabled();
     move |invoke| {
         // Plugin commands use capabilities; local app commands need this explicit popup boundary.
         #[cfg(windows)]
@@ -227,6 +231,10 @@ where
                     .reject("Command unavailable to the tray menu");
                 return true;
             }
+        }
+        if install_features::is_music_command(invoke.message.command()) && !music_enabled {
+            invoke.resolver.reject("Music is unavailable in this installation.");
+            return true;
         }
         handler(invoke)
     }
@@ -929,6 +937,7 @@ pub fn run() {
 pub fn run() {
     #[cfg(target_os = "linux")]
     linux_gamescope::prepare();
+    #[cfg(feature = "music")]
     if music::try_run_connector_worker() {
         return;
     }
@@ -1040,7 +1049,6 @@ pub fn run() {
         })
         .manage(proxy_state)
         .manage(mpv_state)
-        .manage(music::MusicState::new())
         .manage(pip_state)
         .manage(pip_window_state)
         .manage(fullscreen_state)
@@ -1050,6 +1058,13 @@ pub fn run() {
         .manage(modal_overlay_state)
         .manage(discord_rp::DiscordState::new())
         .manage(download::DownloadState::new());
+
+    #[cfg(feature = "music")]
+    let app_builder = if install_features::music_enabled() {
+        app_builder.manage(music::MusicState::new())
+    } else {
+        app_builder
+    };
 
     let app_builder = if cfg!(feature = "context-review") {
         app_builder.plugin(context_review::plugin())
@@ -1091,7 +1106,10 @@ pub fn run() {
                 proc_guard::reap_orphans();
             }
             games::initialize_download_preparation(app.handle());
-            music::initialize(app.handle()).map_err(std::io::Error::other)?;
+            #[cfg(feature = "music")]
+            if install_features::music_enabled() {
+                music::initialize(app.handle()).map_err(std::io::Error::other)?;
+            }
             #[cfg(windows)]
             if !cfg!(feature = "context-review") {
                 use tauri_plugin_deep_link::DeepLinkExt;
@@ -1584,109 +1602,214 @@ pub fn run() {
             diagnostics::diagnostics_collect,
             diagnostics::diagnostics_cleanup,
             trailer::fetch_trailer,
+            trailer::resolve_youtube_stream,
+            #[cfg(feature = "music")]
             music::music_health,
+            #[cfg(feature = "music")]
             music::music_source_candidates,
+            #[cfg(feature = "music")]
             music::music_spotify_status,
+            #[cfg(feature = "music")]
             music::music_spotify_connect,
+            #[cfg(feature = "music")]
             music::music_spotify_device_start,
+            #[cfg(feature = "music")]
             music::music_spotify_device_poll,
+            #[cfg(feature = "music")]
             music::music_spotify_device_cancel,
+            #[cfg(feature = "music")]
             music::music_spotify_browse_connect,
+            #[cfg(feature = "music")]
             music::music_spotify_disconnect,
+            #[cfg(feature = "music")]
             music::music_spotify_devices,
+            #[cfg(feature = "music")]
             music::music_spotify_set_device,
+            #[cfg(feature = "music")]
             music::music_spotify_device,
+            #[cfg(feature = "music")]
             music::music_spotify_library_page,
+            #[cfg(feature = "music")]
             music::music_spotify_create_playlist,
+            #[cfg(feature = "music")]
             music::music_spotify_add_to_playlist,
+            #[cfg(feature = "music")]
             music::music_spotify_remove_from_playlist,
+            #[cfg(feature = "music")]
             music::music_spotify_rename_playlist,
+            #[cfg(feature = "music")]
             music::music_spotify_set_playlist_cover,
+            #[cfg(feature = "music")]
             music::music_lastfm_auth,
+            #[cfg(feature = "music")]
             music::music_lastfm_complete_auth,
+            #[cfg(feature = "music")]
             music::music_lastfm_status,
+            #[cfg(feature = "music")]
             music::run_connector_worker,
+            #[cfg(feature = "music")]
             music::music_search,
+            #[cfg(feature = "music")]
             music::music_resolve_stream,
+            #[cfg(feature = "music")]
             music::music_db_init,
+            #[cfg(feature = "music")]
             music::music_track_upsert,
+            #[cfg(feature = "music")]
             music::music_track_get,
+            #[cfg(feature = "music")]
             music::music_resolve_cached,
+            #[cfg(feature = "music")]
             music::music_get_liked,
+            #[cfg(feature = "music")]
             music::music_set_liked,
+            #[cfg(feature = "music")]
             music::music_get_recents,
+            #[cfg(feature = "music")]
             music::music_add_recent,
+            #[cfg(feature = "music")]
             music::music_get_queue,
+            #[cfg(feature = "music")]
             music::music_set_queue,
+            #[cfg(feature = "music")]
             music::music_list_albums,
+            #[cfg(feature = "music")]
             music::music_list_artists,
+            #[cfg(feature = "music")]
             music::music_list_playlists,
+            #[cfg(feature = "music")]
             music::music_create_playlist,
+            #[cfg(feature = "music")]
             music::music_add_to_playlist,
+            #[cfg(feature = "music")]
             music::music_add_tracks_to_playlist,
+            #[cfg(feature = "music")]
             music::music_rename_playlist,
+            #[cfg(feature = "music")]
             music::music_delete_playlist,
+            #[cfg(feature = "music")]
             music::music_reorder_playlist,
+            #[cfg(feature = "music")]
             music::music_remove_from_playlist,
+            #[cfg(feature = "music")]
             music::music_import_m3u,
+            #[cfg(feature = "music")]
             music::music_export_m3u,
+            #[cfg(feature = "music")]
             music::music_play_track,
+            #[cfg(feature = "music")]
             music::music_spotify_preload,
+            #[cfg(feature = "music")]
             music::music_engine_pause,
+            #[cfg(feature = "music")]
             music::music_paused_for_video,
+            #[cfg(feature = "music")]
             music::music_resume_after_video,
+            #[cfg(feature = "music")]
             music::music_engine_seek,
+            #[cfg(feature = "music")]
             music::music_deck_loop,
+            #[cfg(feature = "music")]
             music::music_deck_scratch,
+            #[cfg(feature = "music")]
             music::music_prewarm_track,
+            #[cfg(feature = "music")]
             music::music_scratch_window,
+            #[cfg(feature = "music")]
             music::music_scratch_hold,
+            #[cfg(feature = "music")]
             music::music_cable_status,
+            #[cfg(feature = "music")]
             music::music_cable_create,
+            #[cfg(feature = "music")]
             music::music_cable_destroy,
+            #[cfg(feature = "music")]
             music::music_deck_play,
+            #[cfg(feature = "music")]
             music::music_deck_pause,
+            #[cfg(feature = "music")]
             music::music_deck_seek,
+            #[cfg(feature = "music")]
             music::music_deck_volume,
+            #[cfg(feature = "music")]
             music::music_deck_stop,
+            #[cfg(feature = "music")]
             music::music_deck_states,
+            #[cfg(feature = "music")]
             music::music_deck_primary,
+            #[cfg(feature = "music")]
             music::music_deck_crossfade,
+            #[cfg(feature = "music")]
             music::music_deck_crossfade_get,
+            #[cfg(feature = "music")]
             music::music_fx_set,
+            #[cfg(feature = "music")]
             music::music_fx_clear,
+            #[cfg(feature = "music")]
             music::music_fx_get,
+            #[cfg(feature = "music")]
             music::music_engine_set_volume,
+            #[cfg(feature = "music")]
             music::music_audio_devices,
+            #[cfg(feature = "music")]
             music::music_audio_settings_get,
+            #[cfg(feature = "music")]
             music::music_audio_meter_set_enabled,
+            #[cfg(feature = "music")]
             music::music_audio_meter_snapshot,
+            #[cfg(feature = "music")]
             music::music_audio_settings_set,
+            #[cfg(feature = "music")]
             music::music_export_filtered,
+            #[cfg(feature = "music")]
             music::music_broadcast_targets,
+            #[cfg(feature = "music")]
             music::music_broadcast_start,
+            #[cfg(feature = "music")]
             music::music_broadcast_stop,
+            #[cfg(feature = "music")]
             music::music_broadcast_status,
+            #[cfg(feature = "music")]
             dj_deck::dj_deck_open,
+            #[cfg(feature = "music")]
             dj_deck::dj_deck_close,
+            #[cfg(feature = "music")]
             music::music_engine_stop,
+            #[cfg(feature = "music")]
             music::music_engine_state,
+            #[cfg(feature = "music")]
             music::music_home_rows,
+            #[cfg(feature = "music")]
             music::music_browse_connector,
+            #[cfg(feature = "music")]
             music::music_album_tracks,
+            #[cfg(feature = "music")]
             music::music_artist_top,
+            #[cfg(feature = "music")]
             music::music_artist_catalog,
+            #[cfg(feature = "music")]
             music::music_artist_rows,
+            #[cfg(feature = "music")]
             music::music_catalog_playlist_tracks,
+            #[cfg(feature = "music")]
             music::music_station_tracks,
+            #[cfg(feature = "music")]
             music::music_search_typed,
+            #[cfg(feature = "music")]
             music::music_video_stream,
+            #[cfg(feature = "music")]
             music::music_search_videos,
+            #[cfg(feature = "music")]
             music::music_search_video_page,
+            #[cfg(feature = "music")]
             music::music_connections,
+            #[cfg(feature = "music")]
             music::music_connect,
+            #[cfg(feature = "music")]
             music::music_disconnect,
+            #[cfg(feature = "music")]
             music::music_local_scan,
+            #[cfg(feature = "music")]
             music::music_local_collection,
             temp_prune::temp_usage_bytes,
             temp_prune::temp_clear,
@@ -1767,16 +1890,23 @@ pub fn run() {
             fullscreen::window_fullscreen_exit,
             browser::browser_open,
             browser::browser_close,
+            #[cfg(feature = "music")]
             ytmusic::ytmusic_open,
+            #[cfg(feature = "music")]
             ytmusic::ytmusic_close,
+            #[cfg(feature = "music")]
             ytmusic::ytmusic_is_open,
             #[cfg(windows)]
+            #[cfg(feature = "music")]
             ytmusic::ytmusic_embed,
             #[cfg(windows)]
+            #[cfg(feature = "music")]
             ytmusic::ytmusic_set_geometry,
             #[cfg(windows)]
+            #[cfg(feature = "music")]
             ytmusic::ytmusic_unembed,
             #[cfg(windows)]
+            #[cfg(feature = "music")]
             ytmusic::ytmusic_set_visible,
             thumbs::thumbs_set_url,
             thumbs::thumbs_spawn_eager,

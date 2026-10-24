@@ -107,6 +107,8 @@ fn component_of(rel: &Path) -> Option<&'static str> {
         Some("plugins")
     } else if first.eq_ignore_ascii_case("resources") && second.eq_ignore_ascii_case("pokemon-engine") {
         Some("games")
+    } else if first.eq_ignore_ascii_case("components") && second.eq_ignore_ascii_case("music") {
+        Some("music")
     } else {
         None
     }
@@ -159,6 +161,9 @@ pub struct Facts {
 
 #[cfg(feature = "payload")]
 fn bucket_for(name: &str) -> &'static str {
+    if component_of(Path::new(name)) == Some("music") {
+        return "music";
+    }
     let n = name.to_ascii_lowercase();
     if n.contains("mpv") {
         "mpv"
@@ -1409,6 +1414,70 @@ mod feature_selection_tests {
         assert!(entry_allowed(Path::new("libmpv-2.dll"), &disabled));
         assert!(entry_allowed(Path::new("uninstall.exe"), &disabled));
         assert!(entry_allowed(Path::new("resources/pokemon-notes.txt"), &disabled));
+    }
+
+    #[test]
+    fn music_payload_is_selected_without_swapping_harbor_executables() {
+        let disabled = keys(&["music"]);
+        assert_eq!(component_of(Path::new("components/music/HarborMusic.dll")), Some("music"));
+        assert_eq!(component_of(Path::new("components/music/ui/index.js")), Some("music"));
+        assert!(!entry_allowed(Path::new("components/music/HarborMusic.dll"), &disabled));
+        assert!(entry_allowed(Path::new("components/music/HarborMusic.dll"), &[]));
+        assert!(entry_allowed(Path::new("harbor.exe"), &disabled));
+        assert!(entry_allowed(Path::new("libmpv-2.dll"), &disabled));
+        assert_eq!(bucket_for("components/music/HarborMusic.dll"), "music");
+    }
+
+    #[test]
+    fn removing_and_readding_music_preserves_existing_app_data() {
+        // A Modify/Repair operation owns the installation directory, never the
+        // pre-modularity Harbor application-data directory or WebView storage.
+        let root = std::env::temp_dir().join(format!(
+            "harbor-music-preservation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let install = root.join("installed").join("Harbor");
+        let data = root.join("AppData").join("Roaming").join("app.harbor");
+        fs::create_dir_all(install.join("components/music")).unwrap();
+        fs::create_dir_all(data.join("spotify")).unwrap();
+        fs::create_dir_all(data.join("WebView2/IndexedDB")).unwrap();
+
+        fs::write(install.join("harbor.exe"), b"original core").unwrap();
+        fs::write(install.join("components/music/harbor-music-module.exe"), b"module v1").unwrap();
+        for (relative, contents) in [
+            ("music.db", b"existing playlists".as_slice()),
+            ("music-other-profile.db", b"existing other profile".as_slice()),
+            ("secrets.json", b"existing Spotify and Last.fm connections".as_slice()),
+            ("settings.json", b"existing Music settings".as_slice()),
+            ("music-audio.json", b"existing audio preferences".as_slice()),
+            ("spotify/credentials.json", b"legacy Spotify sign-in".as_slice()),
+            ("WebView2/IndexedDB/music", b"existing player state".as_slice()),
+        ] {
+            fs::write(data.join(relative), contents).unwrap();
+        }
+        let saved = [
+            "music.db", "music-other-profile.db", "secrets.json",
+            "settings.json", "music-audio.json",
+            "spotify/credentials.json", "WebView2/IndexedDB/music",
+        ].map(|relative| (relative, fs::read(data.join(relative)).unwrap()));
+
+        prune_disabled(&install, &keys(&["music"]));
+        assert!(!install.join("components/music/harbor-music-module.exe").exists());
+        assert_eq!(fs::read(install.join("harbor.exe")).unwrap(), b"original core");
+        for (relative, contents) in &saved {
+            assert_eq!(fs::read(data.join(relative)).unwrap(), *contents, "{relative}");
+        }
+
+        // Adding the component back restores program files; data is not copied
+        // to a new location, migrated, or reset.
+        fs::create_dir_all(install.join("components/music")).unwrap();
+        fs::write(install.join("components/music/harbor-music-module.exe"), b"module v2").unwrap();
+        for (relative, contents) in &saved {
+            assert_eq!(fs::read(data.join(relative)).unwrap(), *contents, "{relative}");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
