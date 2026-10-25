@@ -104,6 +104,8 @@ mod monitors;
 #[cfg(desktop)]
 mod mpv;
 #[cfg(target_os = "linux")]
+mod linux_gamescope;
+#[cfg(target_os = "linux")]
 mod mpv_render_linux;
 #[cfg(target_os = "macos")]
 mod mpv_render_mac;
@@ -925,6 +927,8 @@ pub fn run() {
 
 #[cfg(desktop)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    linux_gamescope::prepare();
     if music::try_run_connector_worker() {
         return;
     }
