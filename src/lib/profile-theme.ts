@@ -418,6 +418,9 @@ export function profileThemeScope(theme: ProfileTheme): ProfileThemeScope {
       const alpha = theme.glass ? GLASS_ALPHA[key] : undefined;
       vars[key] = alpha ? `color-mix(in oklab, ${value} ${alpha}%, transparent)` : value;
     }
+    // Surfaces that must stay readable (quoted reviews, dialogs) use the opaque values.
+    vars["--profile-surface-solid"] = source["--color-surface"];
+    vars["--profile-elevated-solid"] = source["--color-elevated"];
   }
   const light =
     palette === "custom"

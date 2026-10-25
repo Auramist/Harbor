@@ -8,6 +8,7 @@ import { searchUsers, type UserHit } from "@/lib/social/user-search";
 import { currentAuthor } from "@/lib/theme-auth";
 import { useT } from "@/lib/i18n";
 import { Avatar, VerifiedCheck } from "./profile-bits";
+import { useProfileThemeSurfaceStyle } from "./profile-theme-context";
 
 type RowState = "idle" | "sending" | "requested" | "friends" | "self";
 
@@ -19,6 +20,7 @@ export function AddFriendsModal({
   existingHandles?: string[];
 }) {
   const t = useT();
+  const surfaceStyle = useProfileThemeSurfaceStyle();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<UserHit[]>([]);
   const [phase, setPhase] = useState<"idle" | "searching" | "done">("idle");
@@ -98,6 +100,7 @@ export function AddFriendsModal({
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        style={surfaceStyle}
         className="animate-modal-in flex w-[min(94vw,460px)] flex-col rounded-2xl border border-edge-soft bg-elevated shadow-[0_30px_80px_-20px_rgba(0,0,0,0.6)]"
       >
         <div className="flex items-center justify-between px-5 pt-5">

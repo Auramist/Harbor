@@ -7,6 +7,7 @@ import { fileToWebp } from "./group-image-utils";
 import { GroupTagsInput } from "./group-tags-input";
 import { VisibilityToggle } from "./group-visibility-toggle";
 import { useT } from "@/lib/i18n";
+import { useProfileThemeSurfaceStyle } from "./profile-theme-context";
 
 export function CreateGroupModal({
   onClose,
@@ -16,6 +17,7 @@ export function CreateGroupModal({
   onCreated: (g: GroupDetail) => void;
 }) {
   const t = useT();
+  const surfaceStyle = useProfileThemeSurfaceStyle();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] = useState<GroupVisibility>("invite");
@@ -85,6 +87,7 @@ export function CreateGroupModal({
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        style={surfaceStyle}
         className="animate-modal-in flex w-[min(94vw,460px)] flex-col rounded-2xl border border-edge-soft bg-elevated shadow-[0_30px_80px_-20px_rgba(0,0,0,0.6)]"
       >
         <div className="flex items-center justify-between px-5 pt-5">

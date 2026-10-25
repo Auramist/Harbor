@@ -59,6 +59,7 @@ import { useProfile } from "./use-profile";
 import { CanvasCard } from "./customization/canvas-frame";
 import { resolveCustomization, useFontLink } from "./customization/apply";
 import { profileThemeBackground } from "@/lib/profile-theme";
+import { ProfileThemeProvider } from "./profile-theme-context";
 
 export function ProfileView({
   handle,
@@ -357,6 +358,7 @@ export function ProfileView({
         : summary;
 
   return (
+    <ProfileThemeProvider theme={c.theme}>
     <div
       ref={scrollRef}
       data-harbor-no-context-menu
@@ -532,5 +534,6 @@ export function ProfileView({
         </div>
       )}
     </div>
+    </ProfileThemeProvider>
   );
 }

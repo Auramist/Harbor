@@ -15,6 +15,7 @@ import {
 import { useT } from "@/lib/i18n";
 import { saveSocials } from "./profile-api";
 import type { ProfileSummary, SocialEntry } from "./profile-types";
+import { useProfileThemeSurfaceStyle } from "./profile-theme-context";
 
 function ServiceTile({
   service,
@@ -91,6 +92,7 @@ export function SocialsEditor({
   onSaved: (summary: ProfileSummary) => void;
 }) {
   const t = useT();
+  const surfaceStyle = useProfileThemeSurfaceStyle();
   const [list, setList] = useState<SocialEntry[]>(() => initial.slice(0, MAX_SOCIALS));
   const [active, setActive] = useState<SocialKey>(SERVICES[0].key);
   const [value, setValue] = useState("");
@@ -147,6 +149,7 @@ export function SocialsEditor({
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        style={surfaceStyle}
         className="animate-modal-in flex w-[min(94vw,480px)] flex-col rounded-2xl border border-edge-soft bg-elevated shadow-[0_30px_80px_-20px_rgba(0,0,0,0.6)]"
       >
         <div className="flex items-center justify-between px-5 pt-5">

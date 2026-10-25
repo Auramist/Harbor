@@ -7909,3 +7909,14 @@ button.hset-rail-me:hover,
 [data-profile-ui~="gradient"] :is(.bg-surface, .bg-elevated) {
   box-shadow: 0 24px 48px -34px color-mix(in oklab, var(--color-accent) 80%, transparent);
 }
+
+/* Surfaces that stay readable even with the transparent look: quoted reviews and the like. */
+[data-profile-ui~="glass"] [data-profile-solid] {
+  background-color: var(--profile-surface-solid, var(--color-surface));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-profile-ui~="glass"] [data-profile-solid="elevated"] {
+  background-color: var(--profile-elevated-solid, var(--color-elevated));
+}
