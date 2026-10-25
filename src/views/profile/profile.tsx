@@ -58,6 +58,7 @@ import { Showcase } from "./showcase";
 import { useProfile } from "./use-profile";
 import { CanvasCard } from "./customization/canvas-frame";
 import { resolveCustomization, useFontLink } from "./customization/apply";
+import { profileThemeBackground } from "@/lib/profile-theme";
 
 export function ProfileView({
   handle,
@@ -211,6 +212,7 @@ export function ProfileView({
   }
 
   const c = resolveCustomization(summary);
+  const theme = c.themeScope;
   const featuredLists = summary.featuredLists?.map((featured) => {
     if (!summary.isOwner || featured.description) return featured;
     const local = localLists.find(
@@ -358,8 +360,13 @@ export function ProfileView({
     <div
       ref={scrollRef}
       data-harbor-no-context-menu
+      data-profile-ui={theme.ui || undefined}
       className="h-full overflow-y-auto"
-      style={c.background ? { background: c.background } : undefined}
+      style={{
+        ...theme.vars,
+        ...profileThemeBackground(theme, c.background),
+        ...(theme.colorScheme ? { colorScheme: theme.colorScheme } : {}),
+      }}
     >
       <ProfileHero
         p={heroSummary}

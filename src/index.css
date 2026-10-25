@@ -7886,3 +7886,26 @@ button.hset-rail-me:hover,
 .animate-picker-scrim {
   animation: harbor-fade-in 240ms ease-out both;
 }
+
+/* Profile themes: the palette arrives as CSS custom properties on the profile root, so
+   tokens alone cannot express these two looks. Both hooks are scoped to that root, which
+   keeps the profile owner's colours from leaking into the rest of the viewer's app. */
+[data-profile-ui~="glass"]
+  :is(
+    [class*="bg-surface"],
+    [class*="bg-elevated"],
+    [class*="bg-raised"],
+    [class*="bg-canvas"]
+  ) {
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+/* Automatic has no palette values to mix from, so tint its surfaces here instead. */
+[data-profile-ui~="glass-auto"] :is([class*="bg-surface"], [class*="bg-elevated"]) {
+  background-color: color-mix(in oklab, var(--color-surface) 62%, transparent);
+}
+
+[data-profile-ui~="gradient"] :is(.bg-surface, .bg-elevated) {
+  box-shadow: 0 24px 48px -34px color-mix(in oklab, var(--color-accent) 80%, transparent);
+}
