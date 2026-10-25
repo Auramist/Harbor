@@ -35,6 +35,7 @@ export function QuotedRating({
   return (
     <div
       ref={media.ref}
+      data-profile-solid="elevated"
       className="mt-2 rounded-[12px] border border-edge-soft bg-elevated/60 p-2.5"
     >
       <div className="flex gap-3">
