@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::io::{Read,Write,BufRead,BufReader};
 use serde::{Serialize,Deserialize};
 use harbor_music_module::{parse_file,render,MusicTrack};
@@ -114,9 +116,12 @@ fn serve<R: BufRead, W: Write>(reader: R, mut writer: W) -> std::io::Result<()> 
             write_reply(&mut writer, Err("Request too large".into()))?;
             break;
         }
-        let response = serde_json::from_str::<Request>(&line)
-            .map_err(|error| error.to_string())
-            .and_then(handle);
+        let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            serde_json::from_str::<Request>(&line)
+                .map_err(|error| error.to_string())
+                .and_then(handle)
+        }))
+        .unwrap_or_else(|_| Err("Music command failed inside the native module".into()));
         write_reply(&mut writer, response)?;
         writer.flush()?;
     }

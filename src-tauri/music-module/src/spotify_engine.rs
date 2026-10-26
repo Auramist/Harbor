@@ -48,6 +48,14 @@ pub struct SpotifyEngine {
     meter: Arc<SpotifyMeter>,
 }
 
+fn create_session(
+    executor: &tokio::runtime::Runtime,
+    config: SessionConfig,
+    cache: Cache,
+) -> Session {
+    executor.block_on(async move { Session::new(config, Some(cache)) })
+}
+
 fn quality_for(files:&AudioFiles)->Option<(&'static str,u32)> {
     const ORDER:[AudioFileFormat;7]=[
         AudioFileFormat::OGG_VORBIS_320,AudioFileFormat::MP3_320,
@@ -101,7 +109,10 @@ impl SpotifyEngine {
         if !device_id.trim().is_empty() && device_id.len()<=128 {
             config.device_id=device_id.to_string();
         }
-        let session=Session::new(config,Some(cache));
+        // librespot stores the current Tokio handle when the session is created and
+        // spawns its socket tasks on that runtime, so creation and connect must run
+        // inside this engine's runtime rather than on the synchronous serve thread.
+        let session=create_session(&self.executor,config,cache);
         self.executor.block_on(session.connect(credentials,true))
             .map_err(|e|format!("Spotify sign-in failed: {e}"))?;
         if session.is_invalid() {
@@ -214,7 +225,11 @@ impl SpotifyEngine {
             current.position=Some(0.0);
         }
         self.meter.reset();
-        player.load(uri,true,0);
+        {
+            // Player::load takes Handle::current() before it spawns its loader thread.
+            let _runtime=self.executor.enter();
+            player.load(uri,true,0);
+        }
         self.paused.store(false,Ordering::SeqCst);
         Ok(())
     }
@@ -224,6 +239,8 @@ impl SpotifyEngine {
             .map_err(|e|format!("Invalid Spotify URI: {e}"))?;
         let player=self.player.as_ref()
             .ok_or_else(||"Spotify player unavailable".to_string())?;
+        // Same Handle::current() requirement as Player::load.
+        let _runtime=self.executor.enter();
         player.preload(uri);
         Ok(())
     }
@@ -321,5 +338,15 @@ mod tests {
         let mut engine=SpotifyEngine::new().unwrap();
         assert!(engine.seek(f64::NAN).is_err());
         assert!(engine.volume(f64::INFINITY).is_err());
+    }
+    #[test]
+    fn session_creation_has_a_runtime_context() {
+        // librespot's Session::new reads Handle::current(). The native module serves
+        // commands on a plain thread, so this must run through its own runtime.
+        let engine=SpotifyEngine::new().unwrap();
+        let cache=Cache::new::<std::path::PathBuf>(None,None,None,None).unwrap();
+        let session=create_session(&engine.executor,SessionConfig::default(),cache);
+        assert!(!session.is_invalid());
+        session.shutdown();
     }
 }

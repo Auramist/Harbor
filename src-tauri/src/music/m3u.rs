@@ -10,7 +10,7 @@ const MAX_M3U_TRACKS: usize = 5_000;
 struct NativeMusicHost {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
-    stdout: std::io::BufReader<std::process::ChildStdout>,
+    replies: std::sync::mpsc::Receiver<Result<Vec<u8>, String>>,
 }
 
 impl NativeMusicHost {
@@ -26,7 +26,11 @@ impl NativeMusicHost {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
+        crate::proc_guard::configure_std_command(&mut command);
         let mut child = command.spawn().map_err(|error| error.to_string())?;
+        // The sidecar must never outlive Harbor, including when Harbor is force-closed by an
+        // update or repair. Otherwise it keeps its executable locked against the next install.
+        crate::proc_guard::adopt_std(&child);
         let stderr = child.stderr.take().ok_or("Music host event pipe unavailable")?;
         let event_app = MUSIC_EVENT_APP.get().cloned();
         std::thread::spawn(move || {
@@ -51,11 +55,38 @@ impl NativeMusicHost {
         });
         let stdin = child.stdin.take().ok_or("Music host stdin unavailable")?;
         let stdout = child.stdout.take().ok_or("Music host stdout unavailable")?;
-        Ok(Self { child, stdin, stdout: std::io::BufReader::new(stdout) })
+        let (reply_tx, replies) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Read};
+            let mut reader = std::io::BufReader::new(stdout);
+            loop {
+                let mut reply = Vec::new();
+                match reader.by_ref().take(16 * 1024 * 1024 + 1).read_until(b'\n', &mut reply) {
+                    Ok(0) => {
+                        let _ = reply_tx.send(Err("Music host closed its reply pipe".into()));
+                        break;
+                    }
+                    Ok(received) if received > 16 * 1024 * 1024 || !reply.ends_with(b"\n") => {
+                        let _ = reply_tx.send(Err("Music host reply missing or too large".into()));
+                        break;
+                    }
+                    Ok(_) => {
+                        if reply_tx.send(Ok(reply)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error.to_string()));
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(Self { child, stdin, replies })
     }
 
     fn request(&mut self, command: &serde_json::Value) -> Result<Result<serde_json::Value, String>, String> {
-        use std::io::{BufRead, Read, Write};
+        use std::io::Write;
         if self.child.try_wait().map_err(|error| error.to_string())?.is_some() {
             return Err("Music host exited".into());
         }
@@ -66,12 +97,16 @@ impl NativeMusicHost {
         self.stdin.write_all(&input).map_err(|error| error.to_string())?;
         self.stdin.write_all(b"\n").map_err(|error| error.to_string())?;
         self.stdin.flush().map_err(|error| error.to_string())?;
-        let mut reply = Vec::new();
-        let received = self.stdout.by_ref().take(16 * 1024 * 1024 + 1)
-            .read_until(b'\n', &mut reply).map_err(|error| error.to_string())?;
-        if received == 0 || received > 16 * 1024 * 1024 || !reply.ends_with(b"\n") {
-            return Err("Music host reply missing or too large".into());
-        }
+        let reply = match self.replies.recv_timeout(std::time::Duration::from_secs(60)) {
+            Ok(Ok(reply)) => reply,
+            Ok(Err(error)) => return Err(error),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                return Err("Music host stopped responding".into());
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("Music host reply channel closed".into());
+            }
+        };
         let value: serde_json::Value = serde_json::from_slice(&reply)
             .map_err(|error| error.to_string())?;
         if value["abi"] != 1 || value["version"] != env!("CARGO_PKG_VERSION") {
