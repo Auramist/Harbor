@@ -1,19 +1,26 @@
-import { Quote, Star, X } from "lucide-react";
+import { Quote, Star, Users, X } from "lucide-react";
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useT } from "@/lib/i18n";
 import { useRatingPoster } from "@/lib/ratings/poster";
 import type { RatingQuote } from "@/lib/ratings/quote";
-import { rankRatingOptions, ratingToken, type RatingSource } from "@/lib/ratings/trigger";
+import {
+  rankRatingOptions,
+  ratingToken,
+  sourceLabel,
+  type RatingSource,
+} from "@/lib/ratings/trigger";
 import type { PublicRating } from "@/lib/ratings/types";
 import { fetchFriends } from "@/lib/social/friends";
 import { currentAuthor } from "@/lib/theme-auth";
+import { Avatar } from "./profile-bits";
+import { PeoplePanel } from "./rating-people";
 import { loadRatings } from "./use-quoted-rating";
 
-const MAX_FRIENDS = 8;
-
 /** The profile owner, the author and their friends, in the order the picker offers them. */
-export function useRatingSources(ownerHandle?: string): RatingSource[] {
-  const myHandle = currentAuthor()?.handle ?? "";
+export function useRatingSources(ownerHandle?: string, ownerAvatar?: string): RatingSource[] {
+  const me = currentAuthor();
+  const myHandle = me?.handle ?? "";
+  const myAvatar = me?.avatar ?? undefined;
   const [friends, setFriends] = useState<RatingSource[]>([]);
 
   useEffect(() => {
@@ -22,10 +29,12 @@ export function useRatingSources(ownerHandle?: string): RatingSource[] {
     void fetchFriends().then((list) => {
       if (!live) return;
       setFriends(
-        list.slice(0, MAX_FRIENDS).map((friend) => ({
+        list.map((friend) => ({
           handle: friend.handle,
           label: friend.alias || friend.handle,
           kind: "friend" as const,
+          avatarUrl: friend.avatarUrl,
+          online: friend.online,
         })),
       );
     });
@@ -43,25 +52,47 @@ export function useRatingSources(ownerHandle?: string): RatingSource[] {
       seen.add(key);
       out.push(source);
     };
-    if (ownerHandle) add({ handle: ownerHandle, kind: "owner" });
-    if (myHandle) add({ handle: myHandle, kind: "me" });
+    if (ownerHandle) add({ handle: ownerHandle, kind: "owner", avatarUrl: ownerAvatar });
+    if (myHandle) add({ handle: myHandle, kind: "me", avatarUrl: myAvatar });
     for (const friend of friends) add(friend);
     return out;
-  }, [ownerHandle, myHandle, friends]);
+  }, [ownerHandle, ownerAvatar, myHandle, myAvatar, friends]);
 }
 
 export type RatingSuggest = ReturnType<typeof useRatingSuggest>;
 
 /** Typing "#" in a composer offers ratings to quote, from any of the given people. */
 export function useRatingSuggest(text: string, caret: number, sources: RatingSource[]) {
+  // People taken from the person search stay quotable for as long as this composer is mounted.
+  const [picked, setPicked] = useState<RatingSource[]>([]);
+  const all = useMemo(() => {
+    const out = [...sources];
+    const seen = new Set(out.map((source) => source.handle.toLowerCase()));
+    for (const source of picked) {
+      const key = source.handle.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(source);
+    }
+    return out;
+  }, [sources, picked]);
+
+  const [selected, setSelected] = useState("");
+  const source = useMemo(
+    () =>
+      all.find((person) => person.handle.toLowerCase() === selected.toLowerCase()) ??
+      all[0] ??
+      null,
+    [all, selected],
+  );
+
   const token = useMemo(
-    () => (sources.length ? ratingToken(text, caret) : null),
-    [text, caret, sources.length],
+    () => (all.length ? ratingToken(text, caret) : null),
+    [text, caret, all],
   );
   const active = !!token;
-  const [sourceIndex, setSourceIndex] = useState(0);
-  const source = sources[Math.min(sourceIndex, sources.length - 1)];
   const handle = source?.handle ?? "";
+  const [view, setView] = useState<"ratings" | "people">("ratings");
   const [ratings, setRatings] = useState<PublicRating[]>([]);
   const [loadedHandle, setLoadedHandle] = useState("");
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
@@ -88,8 +119,19 @@ export function useRatingSuggest(text: string, caret: number, sources: RatingSou
     () => (token && ready ? rankRatingOptions(ratings, token.query) : []),
     [ratings, token, ready],
   );
-  const open = !!token && options.length > 0 && dismissedAt !== token.start;
+
+  const dismissed = !!token && dismissedAt === token.start;
+  // The picker follows the caret while the author is in the ratings list, and steps out of the
+  // way while the person search has the focus.
+  const open = !!token && !!source && view === "ratings" && !dismissed;
+  const visible = !!token && !!source && (view === "people" || !dismissed);
   const current = Math.max(0, Math.min(index, options.length - 1));
+
+  // Typing again puts the author back in the composer, so the person search steps aside.
+  const tokenKey = token ? `${token.start}:${token.query}` : "";
+  useEffect(() => {
+    setView("ratings");
+  }, [tokenKey]);
 
   useEffect(() => {
     setIndex(0);
@@ -98,18 +140,36 @@ export function useRatingSuggest(text: string, caret: number, sources: RatingSou
   return {
     token,
     source,
-    sources,
+    sources: all,
     options,
     open,
+    visible,
+    view,
     loading: !!token && !ready && dismissedAt === null,
     index: current,
     move: (step: number) =>
       setIndex((i) => (options.length ? (i + step + options.length) % options.length : 0)),
     hover: setIndex,
-    setSource: setSourceIndex,
-    cycleSource: (step: number) =>
-      setSourceIndex((i) => (sources.length ? (i + step + sources.length) % sources.length : 0)),
+    cycleSource: (step: number) => {
+      if (!all.length) return;
+      const at = Math.max(
+        0,
+        all.findIndex((person) => person.handle === source?.handle),
+      );
+      setSelected(all[(at + step + all.length) % all.length].handle);
+    },
     dismiss: () => setDismissedAt(token?.start ?? null),
+    showPeople: () => setView("people"),
+    backToRatings: () => setView("ratings"),
+    pickPerson: (next: RatingSource) => {
+      const key = next.handle.toLowerCase();
+      if (!sources.some((person) => person.handle.toLowerCase() === key)) {
+        setPicked((prev) => [...prev, next]);
+      }
+      setSelected(next.handle);
+      setView("ratings");
+      setIndex(0);
+    },
   };
 }
 
@@ -147,74 +207,108 @@ export function ratingPickerKey(
 export function RatingPicker({
   suggest,
   onPick,
+  onReturnFocus,
 }: {
   suggest: RatingSuggest;
   onPick: (rating: PublicRating) => void;
+  /** Hands the caret back to the composer after the person search has had it. */
+  onReturnFocus?: () => void;
 }) {
   const t = useT();
-  if (!suggest.token || (!suggest.open && !suggest.loading)) return null;
-  const many = suggest.sources.length > 1;
+  if (!suggest.visible) return null;
   return (
     <div
-      role="listbox"
       aria-label={t("Ratings you can quote")}
-      className="absolute bottom-full start-0 z-30 mb-2 w-full overflow-hidden rounded-[12px] border border-edge-soft bg-elevated py-1 shadow-[0_24px_60px_-20px_rgba(0,0,0,0.7)]"
+      data-profile-solid="elevated"
+      className="absolute bottom-full start-0 z-30 mb-2 w-full overflow-hidden rounded-[12px] border border-soft bg-elevated shadow-[0_24px_60px_-20px_rgba(0,0,0,0.7)]"
     >
-      {many && (
-        <div className="mb-1 flex gap-1 overflow-x-auto border-b border-edge-soft px-2 pb-2">
-          {suggest.sources.map((source, i) => (
-            <button
-              key={source.handle}
-              type="button"
-              aria-pressed={suggest.source?.handle === source.handle}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => suggest.setSource(i)}
-              className={`shrink-0 rounded-full px-2.5 py-1 text-[11.5px] font-medium transition-colors ${
-                suggest.source?.handle === source.handle
-                  ? "bg-ink text-canvas"
-                  : "text-ink-muted hover:bg-raised hover:text-ink"
-              }`}
-            >
-              {sourceLabel(source, t)}
-            </button>
-          ))}
-        </div>
-      )}
-      {suggest.open ? (
-        suggest.options.map((r, i) => (
-          <button
-            key={`${r.itemKey}:${r.score}`}
-            type="button"
-            role="option"
-            aria-selected={i === suggest.index}
-            onMouseDown={(e) => e.preventDefault()}
-            onMouseEnter={() => suggest.hover(i)}
-            onClick={() => onPick(r)}
-            className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 text-start transition-colors ${
-              i === suggest.index ? "bg-raised" : ""
-            }`}
-          >
-            <OptionPoster rating={r} />
-            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
-              {r.title}
-            </span>
-            <span className="inline-flex shrink-0 items-center gap-0.5 text-[12px] font-bold tabular-nums text-ink-muted">
-              <Star size={11} className="fill-current" />
-              {r.score}
-            </span>
-          </button>
-        ))
+      {suggest.view === "people" ? (
+        <PeoplePanel
+          sources={suggest.sources}
+          activeHandle={suggest.source?.handle ?? ""}
+          onPick={(person) => {
+            suggest.pickPerson(person);
+            onReturnFocus?.();
+          }}
+          onBack={() => {
+            suggest.backToRatings();
+            onReturnFocus?.();
+          }}
+        />
       ) : (
-        <p className="px-3 py-2 text-[12.5px] text-ink-subtle">{t("Loading ratings…")}</p>
+        <>
+          <PersonBar source={suggest.source} onOpen={suggest.showPeople} />
+          {suggest.loading ? (
+            <p className="px-3 py-2.5 text-[12.5px] text-ink-subtle">
+              {t("Loading ratings…")}
+            </p>
+          ) : suggest.options.length === 0 ? (
+            <p className="px-3 py-2.5 text-[12.5px] text-ink-subtle">
+              {suggest.token?.query.trim()
+                ? t('No matches for "{query}"', { query: suggest.token.query.trim() })
+                : t("No ratings to quote from this person.")}
+            </p>
+          ) : (
+            <div role="listbox" aria-label={t("Ratings you can quote")} className="max-h-[260px] overflow-y-auto py-1">
+              {suggest.options.map((r, i) => (
+                <button
+                  key={`${r.itemKey}:${r.score}`}
+                  type="button"
+                  role="option"
+                  aria-selected={i === suggest.index}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onMouseEnter={() => suggest.hover(i)}
+                  onClick={() => onPick(r)}
+                  className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 text-start transition-colors ${
+                    i === suggest.index ? "bg-raised" : ""
+                  }`}
+                >
+                  <OptionPoster rating={r} />
+                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
+                    {r.title}
+                  </span>
+                  <span className="inline-flex shrink-0 items-center gap-0.5 text-[12px] font-bold tabular-nums text-ink-muted">
+                    <Star size={11} className="fill-current" />
+                    {r.score}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
 }
 
-function sourceLabel(source: RatingSource, t: (key: string) => string): string {
-  if (source.kind === "owner") return t("This profile");
-  if (source.kind === "me") return t("You");
-  return source.label || `@${source.handle}`;
+/** Who the ratings currently on offer belong to, and the door to the person search. */
+function PersonBar({ source, onOpen }: { source: RatingSource | null; onOpen: () => void }) {
+  const t = useT();
+  if (!source) return null;
+  return (
+    <button
+      type="button"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onOpen}
+      aria-label={t("Quote a rating from anyone")}
+      className="flex w-full items-center gap-2.5 border-b border-soft px-2.5 py-2 text-start transition-colors hover:bg-raised"
+    >
+      <Avatar
+        src={source.avatarUrl}
+        size={22}
+        online={source.online}
+        alias={source.label ?? source.handle}
+      />
+      <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-ink">
+        {sourceLabel(source, t)}
+        <span className="font-normal text-ink-subtle"> @{source.handle}</span>
+      </span>
+      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-raised px-2 py-0.5 text-[11px] font-medium text-ink-muted">
+        <Users size={11} />
+        {t("Switch")}
+      </span>
+    </button>
+  );
 }
 
 /** The rating a composer is about to comment on. */

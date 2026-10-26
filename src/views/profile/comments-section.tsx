@@ -18,6 +18,7 @@ export function CommentsSection({
   onOpenAuthor,
   onOpenMeta,
   seedQuote,
+  ownerAvatar,
 }: {
   handle: string;
   isOwner: boolean;
@@ -25,6 +26,7 @@ export function CommentsSection({
   onOpenAuthor?: (h: string) => void;
   onOpenMeta?: (metaId: string, kind?: string, hint?: { name?: string; poster?: string }) => void;
   seedQuote?: { quote: RatingQuote; nonce: number } | null;
+  ownerAvatar?: string;
 }) {
   const t = useT();
   const { state, comments, total, hasMore, loadMore, submit, remove, toggleLike, sending } =
@@ -32,7 +34,7 @@ export function CommentsSection({
   const [shown, setShown] = useState(COMMENTS_PAGE);
   const [quote, setQuote] = useState<RatingQuote | null>(null);
   const [focusSignal, setFocusSignal] = useState(0);
-  const sources = useRatingSources(handle);
+  const sources = useRatingSources(handle, ownerAvatar);
 
   useEffect(() => {
     setShown(COMMENTS_PAGE);

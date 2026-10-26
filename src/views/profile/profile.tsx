@@ -340,6 +340,7 @@ export function ProfileView({
         onOpenAuthor={onOpenProfile}
         onOpenMeta={onOpenMeta}
         seedQuote={quoteSeed}
+        ownerAvatar={summary.avatarUrl}
       />
     ),
   };
@@ -407,6 +408,7 @@ export function ProfileView({
               onOpenAuthor={onOpenProfile}
               onOpenMeta={onOpenMeta}
               seedQuote={quoteSeed}
+              ownerAvatar={summary.avatarUrl}
             />
           </div>
         ) : (

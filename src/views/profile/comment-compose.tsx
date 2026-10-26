@@ -81,6 +81,15 @@ export function CommentCompose({
     });
   };
 
+  // The person search borrows the caret, so it hands it back the same way picking does.
+  const restoreFocus = () => {
+    const el = boxRef.current;
+    if (!el) return;
+    el.focus();
+    const pos = Math.min(caret, text.length);
+    el.setSelectionRange(pos, pos);
+  };
+
   // Picking a rating drops the "#query" and shows the rating as the composer's quote instead.
   const pickRating = (rating: PublicRating) => {
     const source = ratingSuggest.source;
@@ -106,7 +115,7 @@ export function CommentCompose({
   return (
     <div className="relative rounded-md bg-elevated p-2 ring-1 ring-edge-soft focus-within:ring-edge">
       <MentionPicker suggest={suggest} onPick={pick} />
-      <RatingPicker suggest={ratingSuggest} onPick={pickRating} />
+      <RatingPicker suggest={ratingSuggest} onPick={pickRating} onReturnFocus={restoreFocus} />
       {quote && <QuoteChip quote={quote} onRemove={() => onQuoteChange?.(null)} />}
       <textarea
         ref={boxRef}

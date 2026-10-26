@@ -89,6 +89,15 @@ export function PostCompose({
     splice(at, at, `${pad}${bbcode}\n`);
   };
 
+  // The person search borrows the caret, so it hands it back the same way picking does.
+  const restoreFocus = () => {
+    const el = boxRef.current;
+    if (!el) return;
+    el.focus();
+    const pos = Math.min(caret, body.length);
+    el.setSelectionRange(pos, pos);
+  };
+
   const pickRating = (rating: PublicRating) => {
     const source = suggest.source;
     if (!suggest.token || !source) return;
@@ -121,7 +130,7 @@ export function PostCompose({
     <div className="flex gap-3 rounded-lg bg-surface p-3.5 ring-1 ring-edge-soft transition-shadow focus-within:ring-edge">
       <Avatar src={meAvatar} size={38} alias={meAlias} />
       <div className="relative flex min-w-0 flex-1 flex-col gap-2.5">
-        <RatingPicker suggest={suggest} onPick={pickRating} />
+        <RatingPicker suggest={suggest} onPick={pickRating} onReturnFocus={restoreFocus} />
         {quote && <QuoteChip quote={quote} onRemove={() => setQuote(null)} />}
         <textarea
           ref={boxRef}

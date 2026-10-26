@@ -81,8 +81,8 @@ const rating = (itemKey: string, title: string, score = 8): PublicRating => ({
 test("typing # at the caret starts the rating trigger", () => {
   assert.deepEqual(ratingToken("I think #", 9), { start: 8, query: "" });
   assert.deepEqual(ratingToken("I think #the", 12), { start: 8, query: "the" });
-  // A space ends the query, so running prose after a # does not open the picker.
-  assert.equal(ratingToken("#1 of the year", 15), null);
+  // The query runs through spaces, so a multi-word title can be typed: "#blue heron".
+  assert.deepEqual(ratingToken("#1 of the year", 14), { start: 0, query: "1 of the year" });
 });
 
 test("a # inside a word does not start the trigger", () => {
