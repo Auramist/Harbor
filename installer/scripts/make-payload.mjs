@@ -28,6 +28,9 @@ const BUILD_UNINSTALLER =
   "cd installer/src-tauri && cargo build --release --no-default-features --bin harbor-uninstall";
 
 const experimentalCore = process.env.HARBOR_MUSIC_CORE_EXE;
+const skipPlugins = process.env.HARBOR_SKIP_PLUGINS === "1";
+const skipGames = process.env.HARBOR_SKIP_GAMES === "1";
+const skipMusic = process.env.HARBOR_SKIP_MUSIC === "1";
 if (experimentalCore && process.env.HARBOR_MUSIC_MODULE_EXPERIMENTAL !== "1") {
   throw new Error("Alternate Harbor Music Core is allowed only in experimental module packaging");
 }
@@ -48,12 +51,12 @@ const FILES = [
 // The NSIS bundle gets this from tauri.conf.json bundle.resources. This installer builds its own
 // payload, so it has to be named here or extensions are dead in every managed install.
 const CAPSTAN = join(APP, "resources", "capstan");
-const capstanStaged = existsSync(join(CAPSTAN, "capstan.jar"));
+const capstanStaged = !skipPlugins && existsSync(join(CAPSTAN, "capstan.jar"));
 if (capstanStaged) {
   const problems = extensionsModuleProblems(CAPSTAN, "x86_64-pc-windows-msvc");
   if (problems.length) throw new Error(problems.join("\n"));
 }
-if (!capstanStaged && !process.env.HARBOR_CAPSTAN_OPTIONAL) {
+if (!capstanStaged && !skipPlugins && !process.env.HARBOR_CAPSTAN_OPTIONAL) {
   console.error(
     "No extension runtime is staged, so this installer would ship broken extensions.\n",
   );
@@ -67,8 +70,8 @@ if (!capstanStaged && !process.env.HARBOR_CAPSTAN_OPTIONAL) {
 // The game engine is optional at build time the same way: ship it when it is staged, refuse to
 // forget it silently, and let an explicit env var declare a build without it.
 const POKEMON = join(APP, "resources", "pokemon-engine");
-const pokemonStaged = existsSync(join(POKEMON, "Harbor.PokemonEngine.exe"));
-if (!pokemonStaged && !process.env.HARBOR_POKEMON_OPTIONAL) {
+const pokemonStaged = !skipGames && existsSync(join(POKEMON, "Harbor.PokemonEngine.exe"));
+if (!pokemonStaged && !skipGames && !process.env.HARBOR_POKEMON_OPTIONAL) {
   console.error("No game engine is staged, so this installer would ship tab-only games.\n");
   console.error("  " + POKEMON + "\n");
   console.error(
@@ -159,6 +162,8 @@ for (const f of readdirSync(fontsDir)) {
 if (capstanStaged) {
   cpSync(CAPSTAN, join(STAGE, "capstan"), { recursive: true });
   total += treeBytes(CAPSTAN);
+} else if (skipPlugins) {
+  console.error("EXTENSIONS SKIPPED BY REQUEST: no capstan component in this payload.");
 } else {
   console.error("SHIPPING WITHOUT EXTENSION SUPPORT: no runtime staged at " + CAPSTAN);
 }
@@ -167,40 +172,50 @@ if (pokemonStaged) {
   mkdirSync(join(STAGE, "resources"), { recursive: true });
   cpSync(POKEMON, join(STAGE, "resources", "pokemon-engine"), { recursive: true });
   total += treeBytes(POKEMON);
+} else if (skipGames) {
+  console.error("GAME ENGINE SKIPPED BY REQUEST: no pokemon-engine component in this payload.");
 } else {
   console.error("SHIPPING WITHOUT THE GAME ENGINE: no engine staged at " + POKEMON);
 }
 
 // A genuine Music module will be staged here once its native interface is
 // extracted from the core. Never package a placeholder or another Harbor build.
-const musicModule = join(APP, "resources", "music-module");
+const musicModule = process.env.HARBOR_MUSIC_MODULE_DIR
+  ? resolve(process.env.HARBOR_MUSIC_MODULE_DIR)
+  : join(APP, "resources", "music-module");
 const appVersion = JSON.parse(readFileSync(join(APP, "tauri.conf.json"), "utf8")).version;
-if (existsSync(musicModule)) {
-  // Only a dedicated experimental sidecar Core build may stage an experimental
-  // Music module: the regular full Harbor executable already embeds Music.
+if (!skipMusic && existsSync(musicModule)) {
+  // Only a dedicated sidecar Core build may package the Music module: the default
+  // core already embeds legacy Music, so a staged module would be a second engine.
   if (!experimentalCore) {
-    throw new Error("A staged Music module requires HARBOR_MUSIC_CORE_EXE (one Music-free core)");
-  }
-  // The component host is not wired into harbor.exe yet. Refuse accidental
-  // release of a seemingly installable but non-functional DLL.
-  if (process.env.HARBOR_MUSIC_MODULE_EXPERIMENTAL !== "1") {
-    throw new Error("Music runtime loading is not implemented; refusing to ship the staged module");
-  }
-  const manifestPath = join(musicModule, "music-module.json");
-  const libraryPath = join(musicModule, "harbor-music-module.exe");
-  if (!existsSync(manifestPath) || !existsSync(libraryPath)) {
-    throw new Error(
-      "Music module is incomplete; expected music-module.json and harbor-music-module.exe",
+    console.error(
+      "IGNORING STAGED MUSIC MODULE: the default core already includes legacy Music. " +
+        "Set HARBOR_MUSIC_CORE_EXE for a sidecar core to package it.",
     );
+  } else {
+    // The component host is not wired into harbor.exe yet. Refuse accidental
+    // release of a seemingly installable but non-functional DLL.
+    if (process.env.HARBOR_MUSIC_MODULE_EXPERIMENTAL !== "1") {
+      throw new Error("Music runtime loading is not implemented; refusing to ship the staged module");
+    }
+    const manifestPath = join(musicModule, "music-module.json");
+    const libraryPath = join(musicModule, "harbor-music-module.exe");
+    if (!existsSync(manifestPath) || !existsSync(libraryPath)) {
+      throw new Error(
+        "Music module is incomplete; expected music-module.json and harbor-music-module.exe",
+      );
+    }
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8").replace(/^\uFEFF/, ""));
+    if (manifest.version !== appVersion || manifest.abi !== 1 || manifest.kind !== "harbor-music") {
+      throw new Error("Music module has an incompatible version, ABI or type");
+    }
+    const staged = join(STAGE, "components", "music");
+    mkdirSync(dirname(staged), { recursive: true });
+    cpSync(musicModule, staged, { recursive: true });
+    total += treeBytes(musicModule);
   }
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8").replace(/^\uFEFF/, ""));
-  if (manifest.version !== appVersion || manifest.abi !== 1 || manifest.kind !== "harbor-music") {
-    throw new Error("Music module has an incompatible version, ABI or type");
-  }
-  const staged = join(STAGE, "components", "music");
-  mkdirSync(dirname(staged), { recursive: true });
-  cpSync(musicModule, staged, { recursive: true });
-  total += treeBytes(musicModule);
+} else if (skipMusic) {
+  console.error("MUSIC COMPONENT SKIPPED BY REQUEST: no components/music in this payload.");
 }
 
 if (!appVersion) {
