@@ -106,6 +106,7 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
     "@/lib/social/profile-media-meta": {},
     "@/components/context-menu/use-title-context": {},
     "@/lib/i18n": { useT: () => (value: string) => value },
+    "@/views/profile/profile-theme-context": { useProfileThemeSurfaceStyle: () => ({}) },
     "@/components/icons/search-icon": { Search: "search" },
     "@/lib/ratings/actions": {
       REVIEW_MAX: 4000,
@@ -519,6 +520,51 @@ test("the review filter walks the whole list and keeps only ratings with a revie
   assert.deepEqual(h.requests[1].opts, { type: "all", cursor: "cursor-1" });
   await h.resolve(1, page(["c", "d"], undefined, counts, undefined, ["also good", undefined]));
   assert.deepEqual(h.ids(), ["b", "c"]);
+});
+
+test("a search started during Load More waits for its page instead of taking the same cursor", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["all-1"], "cursor-1"));
+  h.click("Load more"); // manual page in flight for cursor-1
+  h.type("target"); // the walk must not ask for cursor-1 as well
+  assert.equal(h.requests.length, 2, "the walk waits for the page Load More is fetching");
+  await h.resolve(1, page(["all-2", "target-2"], "cursor-2"));
+  assert.deepEqual(
+    h.requests[2].opts,
+    { type: "all", cursor: "cursor-2" },
+    "the walk continues from the cursor the manual page left behind",
+  );
+  await h.resolve(2, page(["target-3"]));
+  assert.deepEqual(h.ids(), ["target-2", "target-3"], "the search shows matches only, once each");
+  h.type("");
+  assert.deepEqual(
+    h.ids(),
+    ["all-1", "all-2", "target-2", "target-3"],
+    "clearing the search shows every page both paths loaded, in order",
+  );
+  assert.equal(new Set(h.ids()).size, h.ids().length, "no rating may be appended twice");
+});
+
+test("Load More waits for the walk's page instead of racing it for the cursor", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["a"], "cursor-1"));
+  const loadMore = h.button("Load more").props.onClick;
+  h.type("target"); // the walk takes cursor-1, and hides the button behind its spinner
+  loadMore(); // the captured click must still be refused by the guard
+  assert.equal(h.requests.length, 2, "Load More must not request a page the walk is fetching");
+  await h.resolve(1, page(["target-2"], "cursor-2"));
+  await h.resolve(2, page(["target-3"]));
+  assert.deepEqual(h.ids(), ["target-2", "target-3"]);
+  assert.equal(new Set(h.ids()).size, 2, "no rating may be appended twice");
+});
+
+test("a page that repeats an already loaded rating only appends the new one", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["a", "b"], "cursor-1"));
+  h.click("Load more");
+  await h.resolve(1, page(["b", "c"], "cursor-2"));
+  assert.deepEqual(h.ids(), ["a", "b", "c"]);
+  assert.equal(new Set(h.ids()).size, 3);
 });
 
 test("the review filter and a query apply together", async () => {

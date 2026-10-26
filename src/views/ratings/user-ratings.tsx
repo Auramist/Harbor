@@ -39,6 +39,10 @@ type RatingsRequest = {
   controller: AbortController;
   loading: boolean;
   more: boolean;
+  /** The automatic walk is mid-page, so Load More waits instead of taking its cursor. */
+  walking: boolean;
+  /** Settles when the manual page in flight is done, so the walk can continue from it. */
+  moreDone: Promise<void> | null;
 };
 
 export function UserRatings({
@@ -82,7 +86,15 @@ export function UserRatings({
 
   useEffect(() => {
     const ac = new AbortController();
-    const current = { handle, type, controller: ac, loading: true, more: false };
+    const current: RatingsRequest = {
+      handle,
+      type,
+      controller: ac,
+      loading: true,
+      more: false,
+      walking: false,
+      moreDone: null,
+    };
     request.current = current;
     setLoading(true);
     setMore(false);
@@ -113,13 +125,29 @@ export function UserRatings({
     };
   }, [handle, type]);
 
+  // A rating belongs to one item, so an overlapping page can only repeat one; dropping the
+  // repeats is what keeps two pagination paths from doubling a row.
+  const appendItems = useCallback((incoming: PublicRating[]) => {
+    setItems((prev) => {
+      const seen = new Set(prev.map((r) => `${r.mediaType}:${r.itemKey}`));
+      const added = incoming.filter((r) => {
+        const key = `${r.mediaType}:${r.itemKey}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      return added.length ? [...prev, ...added] : prev;
+    });
+  }, []);
+
   const loadMore = useCallback(async () => {
     const current = request.current;
     if (
-      !cursor ||
+      !cursorRef.current ||
       !current ||
       current.loading ||
       current.more ||
+      current.walking ||
       current.handle !== handle ||
       current.type !== type ||
       current.controller.signal.aborted
@@ -127,21 +155,28 @@ export function UserRatings({
       return;
     current.more = true;
     setMore(true);
-    try {
-      const page = await fetchUserRatings(handle, { type, cursor }, current.controller.signal);
-      if (request.current !== current || current.controller.signal.aborted) return;
-      setItems((prev) => [...prev, ...page.items]);
-      setCursor(page.nextCursor);
-      cursorRef.current = page.nextCursor;
-    } catch {
-      // Keep the current page and cursor available for a retry.
-    } finally {
-      if (request.current === current && !current.controller.signal.aborted) {
-        current.more = false;
-        setMore(false);
+    // The walk awaits this promise, so a manual page and the automatic pagination can never
+    // ask for the same cursor at the same time.
+    current.moreDone = (async () => {
+      const at = cursorRef.current;
+      if (!at) return;
+      try {
+        const page = await fetchUserRatings(handle, { type, cursor: at }, current.controller.signal);
+        if (request.current !== current || current.controller.signal.aborted) return;
+        appendItems(page.items);
+        setCursor(page.nextCursor);
+        cursorRef.current = page.nextCursor;
+      } catch {
+        // Keep the current page and cursor available for a retry.
       }
+    })();
+    await current.moreDone;
+    if (request.current === current && !current.controller.signal.aborted) {
+      current.more = false;
+      current.moreDone = null;
+      setMore(false);
     }
-  }, [cursor, handle, type]);
+  }, [appendItems, handle, type]);
 
   const needle = q.trim().toLowerCase();
   // Searching, ordering and the review filter all read the whole list rather than
@@ -161,27 +196,32 @@ export function UserRatings({
     if (!current || current.handle !== handle || current.type !== type) return;
     let cancelled = false;
     setLoadingAll(true);
+    current.walking = true;
     void (async () => {
-      let next = cursorRef.current;
-      while (!cancelled && next) {
-        const page = await fetchUserRatings(
-          handle,
-          { type, cursor: next },
-          current.controller.signal,
-        ).catch(() => null);
+      while (!cancelled) {
+        // A manual Load More that is already fetching owns the cursor; wait for its page and
+        // continue from wherever it leaves off instead of asking for the same one again.
+        if (current.more && current.moreDone) await current.moreDone;
+        if (cancelled || request.current !== current || current.controller.signal.aborted) return;
+        const at = cursorRef.current;
+        if (!at) break;
+        const page = await fetchUserRatings(handle, { type, cursor: at }, current.controller.signal).catch(
+          () => null,
+        );
         if (cancelled || request.current !== current || current.controller.signal.aborted) return;
         if (!page) break;
-        next = page.nextCursor;
-        cursorRef.current = next;
-        setItems((prev) => [...prev, ...page.items]);
-        setCursor(next);
+        cursorRef.current = page.nextCursor;
+        appendItems(page.items);
+        setCursor(page.nextCursor);
       }
+      current.walking = false;
       if (!cancelled) setLoadingAll(false);
     })();
     return () => {
       cancelled = true;
+      current.walking = false;
     };
-  }, [walkAll, loading, handle, type]);
+  }, [appendItems, walkAll, loading, handle, type]);
 
   // Ordering a partly loaded list would visibly reshuffle as pages stream in, so
   // the list is held until the walk finishes. Searching still streams: matches
@@ -364,7 +404,7 @@ export function UserRatings({
                   <button
                     type="button"
                     onClick={loadMore}
-                    disabled={more}
+                    disabled={more || loadingAll}
                     className="mx-auto mt-2 inline-flex items-center gap-2 rounded-full border border-edge px-5 py-2 text-[13px] font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink disabled:opacity-50"
                   >
                     {more && <Loader2 size={14} className="animate-spin" />}
