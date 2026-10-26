@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { unzipSync } from "fflate";
 
 const read = (path) => readFileSync(new URL("../" + path, import.meta.url));
@@ -9,7 +10,11 @@ const version = JSON.parse(read("src-tauri/tauri.conf.json")).version;
 assert.equal(read("installer/src-tauri/payload/version.txt").toString().trim(), version);
 const payload = read("installer/src-tauri/payload/harbor-payload.zip");
 const experimentalCore = process.env.HARBOR_MUSIC_CORE_EXE;
+const skipMusic = process.env.HARBOR_SKIP_MUSIC === "1";
 const musicBinary = "components/music/harbor-music-module.exe";
+const musicModuleExe = process.env.HARBOR_MUSIC_MODULE_DIR
+  ? resolve(process.env.HARBOR_MUSIC_MODULE_DIR, "harbor-music-module.exe")
+  : new URL("../src-tauri/resources/music-module/harbor-music-module.exe", import.meta.url);
 const extensionsBinary = "capstan/harbor-extensions-module.exe";
 const extensionsManifest = "capstan/extensions-module.json";
 const entries = unzipSync(payload, {
@@ -66,13 +71,16 @@ if (canonicalEntries["capstan/capstan.jar"]) {
     "Stale Extensions module payload",
   );
 }
-if (experimentalCore) {
+if (experimentalCore && !skipMusic) {
   assert.ok(canonicalEntries[musicBinary], "Optional native Music module is missing");
   assert.equal(
     hash(canonicalEntries[musicBinary]),
-    hash(read("src-tauri/resources/music-module/harbor-music-module.exe")),
+    hash(readFileSync(musicModuleExe)),
     "Music module in payload is stale",
   );
+}
+if (skipMusic) {
+  assert.ok(!canonicalEntries[musicBinary], "Music payload present even though Music was skipped");
 }
 if (process.argv.includes("--embedded")) {
   const installer = read("installer/src-tauri/target/release/harbor-shipyard.exe");
