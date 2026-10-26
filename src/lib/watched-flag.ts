@@ -2,7 +2,8 @@ import {
   stremioProfileId as activeProfileId,
   primaryProfileId,
   isNuvioProviderActive,
-  getNuvioActiveSlot,
+  nuvioWatchedScope,
+  canPersistWatched,
 } from "./active-profile-id";
 import { useSyncExternalStore } from "react";
 import { isMovieWatchedLocal, subscribeMovieWatched } from "./movie-watched";
@@ -17,7 +18,7 @@ let cache: Set<string> | null = null;
 let currentScope = "";
 
 function storeKey(): string {
-  if (isNuvioProviderActive()) return `harbor.watchedFlag.nuvio.v1.${getNuvioActiveSlot()}`;
+  if (isNuvioProviderActive()) return `harbor.watchedFlag.${nuvioWatchedScope()}`;
   const id = activeProfileId();
   return id ? KEY_PREFIX + id : LEGACY_KEY;
 }
@@ -37,15 +38,6 @@ function migrateLegacy(): void {
   }
 }
 
-function readScope(scope: string): string | null {
-  const raw = localStorage.getItem(scope);
-  if (raw != null) return raw;
-  if (!isNuvioProviderActive() || !scope.startsWith("harbor.watchedFlag.nuvio.v1.")) return null;
-  // Before the Nuvio-specific key existed, Nuvio flags lived in the Stremio
-  // shared key. Read it until the first pull or local write creates the new key.
-  const profile = activeProfileId();
-  return localStorage.getItem(profile ? `harbor.watchedFlag.v1.${profile}` : LEGACY_KEY);
-}
 
 function load(): Set<string> {
   const scope = storeKey();
@@ -53,7 +45,7 @@ function load(): Set<string> {
   currentScope = scope;
   migrateLegacy();
   try {
-    const arr = JSON.parse(readScope(scope) ?? "[]");
+    const arr = JSON.parse(localStorage.getItem(scope) ?? "[]");
     cache = new Set(
       Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : [],
     );
@@ -64,6 +56,7 @@ function load(): Set<string> {
 }
 
 function persist(next: Set<string>): void {
+  if (!canPersistWatched()) return;
   currentScope = storeKey();
   cache = next;
   version += 1;
@@ -72,8 +65,13 @@ function persist(next: Set<string>): void {
 }
 
 /** Apply one verified Nuvio snapshot without quadratic storage writes. */
-export function reconcileNuvioWatchedFlags(slot: number, serverIds: ReadonlySet<string>): void {
-  const key = `harbor.watchedFlag.nuvio.v1.${slot}`;
+export function reconcileNuvioWatchedFlags(
+  slot: number,
+  serverIds: ReadonlySet<string>,
+  accountId: string,
+): void {
+  if (!accountId) return;
+  const key = `harbor.watchedFlag.${nuvioWatchedScope(slot, accountId)}`;
   let previous: string[] = [];
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
@@ -116,6 +114,7 @@ export function setWatchedFlag(metaId: string, watched: boolean): void {
 }
 
 export function setWatchedFlagAcknowledged(metaId: string, watched: boolean): void {
+  if (!canPersistWatched()) return;
   const next = new Set(load());
   if (watched) next.add(metaId);
   else next.delete(metaId);

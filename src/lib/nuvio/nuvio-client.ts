@@ -162,9 +162,16 @@ export async function refreshNuvioSession(): Promise<NuvioSession | null> {
 export async function nuvioFetch(
   endpoint: string,
   options: RequestInit = {},
+  canSend: () => boolean = () => true,
 ): Promise<Response> {
-  let state = loadNuvioState();
+  const state = loadNuvioState();
   let session = state.session;
+  const accountId = session?.user?.id;
+  const checkOwner = () => {
+    if (loadNuvioState().session?.user?.id !== accountId || !canSend())
+      throw new Error("Nuvio request owner changed");
+  };
+  checkOwner();
 
   if (session) {
     const nowSec = Math.floor(Date.now() / 1000);
@@ -175,6 +182,7 @@ export async function nuvioFetch(
     }
   }
 
+  checkOwner();
   const url = endpoint.startsWith("http") ? endpoint : `${NUVIO_DEFAULT_API}${endpoint}`;
   const headers = new Headers(options.headers || {});
   headers.set("Accept", "application/json");
@@ -190,7 +198,9 @@ export async function nuvioFetch(
 
   if (res.status === 401 && session?.refresh_token) {
     // Retry once after refresh
+    checkOwner();
     const refreshed = await refreshNuvioSession();
+    checkOwner();
     if (refreshed?.access_token) {
       headers.set("Authorization", `Bearer ${refreshed.access_token}`);
       res = await fetch(url, { ...options, headers });

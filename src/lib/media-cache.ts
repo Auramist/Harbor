@@ -11,6 +11,7 @@ export const MEDIA_TTL = {
 
 export type MediaCachePolicy<T> = {
   ttl?: number | ((value: T) => number);
+  maxAge?: number;
   stale?: number;
   staleWhileRevalidate?: boolean;
   fallbackOnError?: boolean;
@@ -242,7 +243,10 @@ export function createMediaCache(
       policy.valid?.(record.value as T) === false
     )
       record = null;
-    if (record && record.freshUntil > now()) {
+    if (
+      record &&
+      Math.min(record.freshUntil, record.storedAt + (policy.maxAge ?? Infinity)) > now()
+    ) {
       counters.hits++;
       traceCache(key, "hit");
       if (now() - record.accessedAt > 60_000) {

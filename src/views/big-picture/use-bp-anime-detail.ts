@@ -126,44 +126,56 @@ export function useBpAnimeDetail(meta: Meta | null, opts?: BpAnimeDetailOptions)
       return;
     }
     let alive = true;
+    let generation = 0;
     const patch = (fn: (prev: Loaded) => Loaded) =>
       setLoaded((prev) => (prev && prev.key === metaId ? fn(prev) : prev));
-    void animeDetails(settingsRef.current, seed)
-      .then((res) => {
-        if (!alive) return;
-        setSettled(metaId);
-        if (!res) return;
-        setLoaded({
-          key: metaId,
-          detail: res.detail,
-          episodes: res.episodes,
-          streamers: res.streamers,
-          kitsuId: res.kitsuId,
-          imdbId: res.imdbId ?? res.detail.imdbId ?? null,
+    const load = () => {
+      const request = ++generation;
+      void animeDetails(settingsRef.current, seed)
+        .then((res) => {
+          if (!alive || request !== generation) return;
+          setSettled(metaId);
+          if (!res) return;
+          setLoaded({
+            key: metaId,
+            detail: res.detail,
+            episodes: res.episodes,
+            streamers: res.streamers,
+            kitsuId: res.kitsuId,
+            imdbId: res.imdbId ?? res.detail.imdbId ?? null,
+          });
+          void res.extrasPromise
+            .then((extras) => {
+              if (!alive || request !== generation) return;
+              patch((prev) => ({
+                ...prev,
+                detail: mergeAnimeDetailExtras(prev.detail, extras),
+                imdbId: extras.imdbId ?? prev.imdbId,
+              }));
+            })
+            .catch(NOOP);
+          // The provider publishes one completed enrichment snapshot.
+          void res.enrichPromise
+            .then((eps) => {
+              if (!alive || request !== generation) return;
+              patch((prev) => (prev.episodes === eps ? prev : { ...prev, episodes: eps }));
+            })
+            .catch(NOOP);
+        })
+        .catch(() => {
+          if (alive && request === generation) setSettled(metaId);
         });
-        void res.extrasPromise
-          .then((extras) => {
-            if (!alive) return;
-            patch((prev) => ({
-              ...prev,
-              detail: mergeAnimeDetailExtras(prev.detail, extras),
-              imdbId: extras.imdbId ?? prev.imdbId,
-            }));
-          })
-          .catch(NOOP);
-        // The provider publishes one completed enrichment snapshot.
-        void res.enrichPromise
-          .then((eps) => {
-            if (!alive) return;
-            patch((prev) => (prev.episodes === eps ? prev : { ...prev, episodes: eps }));
-          })
-          .catch(NOOP);
-      })
-      .catch(() => {
-        if (alive) setSettled(metaId);
-      });
+    };
+    const onWake = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    load();
+    window.addEventListener("focus", onWake);
+    document.addEventListener("visibilitychange", onWake);
     return () => {
       alive = false;
+      window.removeEventListener("focus", onWake);
+      document.removeEventListener("visibilitychange", onWake);
     };
   }, [isAnime, metaId]);
 

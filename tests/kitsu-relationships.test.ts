@@ -124,7 +124,15 @@ test("kitsuMainTvSeries only follows parent_story or full_story, ignoring spinof
     "@/lib/cache": { lruSet: () => ({ has: () => false, add: () => {} }) },
     "@/lib/cinemeta": {},
     "@/lib/maintenance": { registerEvictable: () => {} },
-    "@/lib/media-cache": { onMediaCacheClear() {}, mediaCacheGeneration: () => 0, cachedMedia: (_namespace: string, _scope: unknown[], loader: () => Promise<unknown>) => loader(), metadataCacheTtl: () => 43_200_000 },
+    "@/lib/media-cache": {
+      onMediaCacheClear() {},
+      mediaCacheGeneration: () => 0,
+      loadMedia: async (_namespace: string, _scope: unknown[], loader: () => Promise<unknown>) => ({
+        value: await loader(),
+        storedAt: Date.now(),
+      }),
+      metadataCacheTtl: () => 43_200_000,
+    },
     "@/lib/safe-fetch": {
       safeFetch: async (url: string) => {
         requestedUrl = url;

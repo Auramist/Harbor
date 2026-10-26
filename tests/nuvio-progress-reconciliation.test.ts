@@ -9,14 +9,17 @@ import {
   pushWatchedItemToNuvio,
   deleteWatchedItemFromNuvio,
   deleteEpisodeWatchProgressFromNuvio,
+  deleteWatchProgressFromNuvio,
   resolveNuvioProfileIndex,
   readCachedWatchProgress,
   writeCachedWatchProgress,
+  flushPendingNuvioMutations,
+  startNuvioMutationRetry,
 } from "../src/lib/nuvio/nuvio-sync";
 import type { NuvioWatchProgress } from "../src/lib/nuvio/nuvio-types";
 import { localCwEntry, saveLocalCw, saveLocalCwBatch } from "../src/lib/local-cw";
 import { buildNuvioPlaybackItems } from "../src/lib/nuvio/nuvio-playback";
-import { getNuvioActiveSlot } from "../src/lib/active-profile-id";
+import { getNuvioActiveSlot, nuvioWatchedScope } from "../src/lib/active-profile-id";
 import { readResumeEntry, saveResumeBatch, saveResumeMs } from "../src/lib/resume";
 
 const storage = new Map<string, string>();
@@ -325,7 +328,10 @@ test("watched snapshots collect capped pages and reject repeated or contradictor
       content_id: `cap-${i}`,
       content_type: "movie",
     }));
-    storage.set("harbor.watchedFlag.nuvio.v1.1", JSON.stringify(rows.map((row) => row.content_id)));
+    storage.set(
+      `harbor.watchedFlag.${nuvioWatchedScope(1)}`,
+      JSON.stringify(rows.map((row) => row.content_id)),
+    );
     let pages = 0;
     globalThis.fetch = async (url) => {
       if (String(url).includes("/rpc/")) return response(rows.slice(0, 100));
@@ -335,13 +341,19 @@ test("watched snapshots collect capped pages and reject repeated or contradictor
     };
     await reconcileNuvioWatched(1);
     assert.equal(pages, 5);
-    assert.equal(JSON.parse(storage.get("harbor.watchedFlag.nuvio.v1.1")!).length, 500);
+    assert.equal(
+      JSON.parse(storage.get(`harbor.watchedFlag.${nuvioWatchedScope(1)}`)!).length,
+      500,
+    );
     globalThis.fetch = async (url) =>
       String(url).includes("/rpc/")
         ? response([], 503)
         : response(rows.slice(0, 100), 200, "0-99/500");
     assert.equal(await pullWatchedItemsFromNuvio(1), null);
-    assert.equal(JSON.parse(storage.get("harbor.watchedFlag.nuvio.v1.1")!).length, 500);
+    assert.equal(
+      JSON.parse(storage.get(`harbor.watchedFlag.${nuvioWatchedScope(1)}`)!).length,
+      500,
+    );
   });
 });
 
@@ -374,7 +386,9 @@ test("failed watched marks and unmarks survive pulls until cloud confirmation", 
     globalThis.fetch = async () =>
       response([{ content_id: "pending-unmark", content_type: "movie" }], 200, "0-0/1");
     await reconcileNuvioWatched(1);
-    assert.deepEqual(JSON.parse(storage.get("harbor.watchedFlag.nuvio.v1.1")!), ["pending-mark"]);
+    assert.deepEqual(JSON.parse(storage.get(`harbor.watchedFlag.${nuvioWatchedScope(1)}`)!), [
+      "pending-mark",
+    ]);
   });
 });
 
@@ -426,7 +440,7 @@ test("watched storage changed during a pull is preserved before its push starts"
       String(url).includes("/rpc/") ? deferred : response([], 200, "*/0");
     const work = reconcileNuvioWatched(1);
     await tick();
-    const key = "harbor.watchedFlag.nuvio.v1.1";
+    const key = `harbor.watchedFlag.${nuvioWatchedScope(1)}`;
     storage.set(key, JSON.stringify(["new-local-mark"]));
     finish(response([]));
     await work;
@@ -444,12 +458,16 @@ test("an old mark acknowledgement cannot erase a replacement unmark", async () =
       String(url).includes("sync_push_watched_items") ? deferred : response([], 503);
     const oldPush = pushWatchedItemToNuvio(1, [{ contentId: "replacement" }]);
     await tick();
-    await deleteWatchedItemFromNuvio(1, [{ contentId: "replacement" }]);
+    const unmark = deleteWatchedItemFromNuvio(1, [{ contentId: "replacement" }]);
     finish(response([]));
     await oldPush;
+    await unmark;
     globalThis.fetch = async () => response([{ content_id: "replacement" }], 200, "0-0/1");
     await reconcileNuvioWatched(1);
-    assert.deepEqual(JSON.parse(storage.get("harbor.watchedFlag.nuvio.v1.1") ?? "[]"), []);
+    assert.deepEqual(
+      JSON.parse(storage.get(`harbor.watchedFlag.${nuvioWatchedScope(1)}`) ?? "[]"),
+      [],
+    );
   });
 });
 
@@ -569,13 +587,15 @@ test("a table snapshot that contradicts the RPC cannot erase local history", asy
 
 test("a watched table that contradicts the RPC cannot clear watched flags", async () => {
   await customSnapshot("watched-table-conflict", async () => {
-    storage.set("harbor.watchedFlag.nuvio.v1.1", JSON.stringify(["keep"]));
+    storage.set(`harbor.watchedFlag.${nuvioWatchedScope(1)}`, JSON.stringify(["keep"]));
     globalThis.fetch = async (url) =>
       String(url).includes("/rpc/")
         ? response([{ content_id: "keep", content_type: "movie" }], 200, "0-0/1")
         : response([], 200, "*/0");
     assert.equal(await pullWatchedItemsFromNuvio(1), null);
-    assert.deepEqual(JSON.parse(storage.get("harbor.watchedFlag.nuvio.v1.1")!), ["keep"]);
+    assert.deepEqual(JSON.parse(storage.get(`harbor.watchedFlag.${nuvioWatchedScope(1)}`)!), [
+      "keep",
+    ]);
   });
 });
 
@@ -621,5 +641,268 @@ test("clearing a large history uses batched storage writes", async () => {
     assert.ok(writes < 10, `expected batched writes, saw ${writes}`);
     assert.equal(localCwEntry("bulk-0", false, "nuvio-1"), null);
     assert.equal(readResumeEntry("bulk-0", 1, 1, "nuvio-1"), null);
+  });
+});
+
+function recoveringServer() {
+  let offline = true;
+  const watched = new Map<string, Record<string, unknown>>();
+  const progress = new Map<string, Record<string, unknown>>();
+  const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const coord = (row: Record<string, unknown>) =>
+    JSON.stringify([row.content_id, row.season ?? null, row.episode ?? null]);
+  const fetch = async (url: string | URL | Request, init?: RequestInit) => {
+    if (offline) return response([], 503);
+    const parsed = new URL(String(url));
+    const path = parsed.pathname;
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    const isProgress = path.includes("watch_progress");
+    const rows = isProgress ? progress : watched;
+    if (path.includes("sync_pull_profile_settings_blob")) return response([]);
+    if (path.includes("sync_push_profile_settings_blob")) return response([]);
+    if (
+      path.includes("sync_pull_") ||
+      (!path.includes("/rpc/") && (!init?.method || init.method === "GET"))
+    ) {
+      const all = [...rows.values()].filter(
+        (row) =>
+          !parsed.searchParams.has("content_id") ||
+          row.content_id === parsed.searchParams.get("content_id")!.slice(3),
+      );
+      const offset = Number(parsed.searchParams.get("offset") ?? 0);
+      const page = all.slice(offset, offset + 1000);
+      return response(
+        page,
+        200,
+        page.length ? `${offset}-${offset + page.length - 1}/${all.length}` : `*/${all.length}`,
+      );
+    }
+    writes.push({ path, body });
+    if (path.includes("sync_push_")) {
+      const entries = (body.p_entries ?? body.p_items) as Array<Record<string, unknown>>;
+      for (const row of entries) rows.set(coord(row), { ...row, profile_id: 1 });
+    } else if (path.includes("sync_delete_")) {
+      for (const key of body.p_keys as Array<string | Record<string, unknown>>) {
+        if (typeof key === "string") {
+          for (const [id, row] of rows) if (row.progress_key === key) rows.delete(id);
+        } else {
+          for (const [id, row] of rows)
+            if (
+              row.content_id === key.content_id &&
+              (key.season == null || row.season === key.season) &&
+              (key.episode == null || row.episode === key.episode)
+            )
+              rows.delete(id);
+        }
+      }
+    } else if (init?.method === "DELETE") {
+      for (const [id, row] of rows)
+        if (
+          row.content_id === parsed.searchParams.get("content_id")?.slice(3) &&
+          (!parsed.searchParams.has("season") ||
+            row.season === Number(parsed.searchParams.get("season")!.slice(3))) &&
+          (!parsed.searchParams.has("episode") ||
+            row.episode === Number(parsed.searchParams.get("episode")!.slice(3)))
+        )
+          rows.delete(id);
+    } else rows.set(coord(body), body);
+    return response([]);
+  };
+  return {
+    watched,
+    progress,
+    writes,
+    coord,
+    fetch,
+    online() {
+      offline = false;
+    },
+  };
+}
+
+for (const action of ["mark", "unmark", "progress", "episode-delete", "title-delete"] as const) {
+  test(`offline ${action} is delivered after recovery and removed only after a confirming pull`, async () => {
+    await customSnapshot(`replay-${action}`, async (accountId) => {
+      const server = recoveringServer();
+      globalThis.fetch = server.fetch as typeof fetch;
+      const old = {
+        ...progress("replay", 1, Date.now() - 1000),
+        position: 120000,
+        duration: 1200000,
+      };
+      if (action.includes("delete")) server.progress.set(server.coord(old), old);
+      if (action === "unmark")
+        server.watched.set(server.coord({ content_id: "replay" }), { content_id: "replay" });
+      let sent = false;
+      if (action === "mark")
+        sent = await pushWatchedItemToNuvio(1, [{ contentId: "replay", watchedAt: 12345 }]);
+      if (action === "unmark")
+        sent = await deleteWatchedItemFromNuvio(1, [{ contentId: "replay" }]);
+      if (action === "progress")
+        sent = await pushWatchProgressToNuvio(1, "replay", 600, 1200, 1, 1);
+      if (action === "episode-delete")
+        sent = await deleteEpisodeWatchProgressFromNuvio(1, "replay", 1, 1);
+      if (action === "title-delete") sent = await deleteWatchProgressFromNuvio(1, "replay");
+      assert.equal(sent, false);
+      const key = `harbor.nuvio.pending-sync.v1.${accountId}.slot.1`;
+      const pending = JSON.parse(storage.get(key)!);
+      assert.ok(Object.keys(pending).length > 0);
+      const time = Object.values(pending).map(
+        (value: any) => value.row.last_watched ?? value.row.watched_at,
+      );
+      server.online();
+      const first = flushPendingNuvioMutations();
+      assert.strictEqual(flushPendingNuvioMutations(), first, "concurrent retries share one flush");
+      assert.equal(await first, true);
+      assert.deepEqual(JSON.parse(storage.get(key)!), {});
+      assert.ok(server.writes.length > 0);
+      if (action === "mark") {
+        assert.equal(server.watched.size, 1);
+        assert.equal([...server.watched.values()][0].watched_at, time[0]);
+      } else if (action === "progress") {
+        assert.equal([...server.progress.values()][0].position, 600000);
+        assert.equal([...server.progress.values()][0].last_watched, time[0]);
+      } else assert.equal(action === "unmark" ? server.watched.size : server.progress.size, 0);
+      const count = server.writes.length;
+      await flushPendingNuvioMutations();
+      assert.equal(server.writes.length, count, "an acknowledged mutation is not replayed");
+    });
+  });
+}
+
+test("replay retains inactive account mutations and resumes delivery when their owner returns", async () => {
+  await customSnapshot("owner-replay", async (accountId) => {
+    const server = recoveringServer();
+    globalThis.fetch = server.fetch as typeof fetch;
+    await pushWatchedItemToNuvio(1, [{ contentId: "A-only" }]);
+    const state = loadNuvioState();
+    server.online();
+    saveNuvioState({ ...state, session: { ...state.session!, user: { id: "account-B" } } });
+    assert.equal(await flushPendingNuvioMutations(), true);
+    assert.equal(server.writes.length, 0);
+    assert.ok(storage.get(`harbor.nuvio.pending-sync.v1.${accountId}.slot.1`)!.includes("A-only"));
+    saveNuvioState(state);
+    assert.equal(await flushPendingNuvioMutations(), true);
+    assert.equal(server.watched.size, 1);
+  });
+});
+
+test("title deletion replay excludes a newer episode re-add", async () => {
+  await customSnapshot("delete-readd", async () => {
+    const server = recoveringServer();
+    globalThis.fetch = server.fetch as typeof fetch;
+    for (const episode of [1, 2]) {
+      const row = {
+        ...progress("show", episode, Date.now() - 1000),
+        position: 120000,
+        duration: 1200000,
+      };
+      server.progress.set(server.coord(row), row);
+    }
+    await deleteWatchProgressFromNuvio(1, "show");
+    await pushWatchProgressToNuvio(1, "show", 600, 1200, 1, 2);
+    server.online();
+    assert.equal(await flushPendingNuvioMutations(), true);
+    assert.deepEqual(
+      [...server.progress.values()].map((row) => row.episode),
+      [2],
+    );
+    assert.equal([...server.progress.values()][0].position, 600000);
+  });
+});
+
+test("the application retry lifecycle delivers on reconnection and removes its listeners on cleanup", async (t) => {
+  await customSnapshot("retry-lifecycle", async () => {
+    const originalWindow = globalThis.window;
+    const originalDocument = globalThis.document;
+    const events = new EventTarget();
+    const documentEvents = Object.assign(new EventTarget(), { visibilityState: "visible" });
+    globalThis.window = events as unknown as Window & typeof globalThis;
+    globalThis.document = documentEvents as unknown as Document;
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let stop = () => {};
+    try {
+      const server = recoveringServer();
+      globalThis.fetch = server.fetch as typeof fetch;
+      await pushWatchedItemToNuvio(1, [{ contentId: "reconnected" }]);
+      stop = startNuvioMutationRetry();
+      server.online();
+      events.dispatchEvent(new Event("online"));
+      t.mock.timers.tick(1000);
+      for (let i = 0; i < 5; i++) await tick();
+      assert.equal(server.watched.size, 1);
+      const calls = server.writes.length;
+      stop();
+      events.dispatchEvent(new Event("online"));
+      t.mock.timers.tick(60_000);
+      await tick();
+      assert.equal(server.writes.length, calls);
+    } finally {
+      stop();
+      t.mock.timers.reset();
+      globalThis.window = originalWindow;
+      globalThis.document = originalDocument;
+    }
+  });
+});
+
+test("a persisted journal from a previous application run is delivered without re-recording", async () => {
+  await customSnapshot("persisted-replay", async (accountId) => {
+    const server = recoveringServer();
+    server.online();
+    globalThis.fetch = server.fetch as typeof fetch;
+    const row = {
+      content_id: "persisted",
+      profile_id: 1,
+      season: null,
+      episode: null,
+      watched_at: 12345,
+    };
+    const key = `harbor.nuvio.pending-sync.v1.${accountId}.slot.1`;
+    storage.set(
+      key,
+      JSON.stringify({
+        ['watched:["persisted",null,null]']: {
+          token: "previous-run-token",
+          kind: "watched",
+          row,
+          deleted: false,
+        },
+      }),
+    );
+    assert.equal(await flushPendingNuvioMutations(), true);
+    assert.equal([...server.watched.values()][0].watched_at, 12345);
+    assert.deepEqual(JSON.parse(storage.get(key)!), {});
+  });
+});
+
+test("an older pending progress update cannot overwrite a newer server checkpoint", async () => {
+  await customSnapshot("newer-server", async () => {
+    const server = recoveringServer();
+    globalThis.fetch = server.fetch as typeof fetch;
+    await pushWatchProgressToNuvio(1, "newer-server", 600, 1200, 1, 1);
+    const row = {
+      ...progress("newer-server", 1, Date.now() + 1000),
+      position: 900000,
+      duration: 1200000,
+    };
+    server.progress.set(server.coord(row), row);
+    server.online();
+    assert.equal(await flushPendingNuvioMutations(), true);
+    assert.equal(server.writes.length, 0);
+    assert.equal([...server.progress.values()][0].position, 900000);
+  });
+});
+
+
+test("progress delivery never forces a watched-history snapshot", async () => {
+  await customSnapshot("progress-only", async () => {
+    const server = recoveringServer();
+    const paths: string[] = [];
+    globalThis.fetch = async (url, init) => { paths.push(String(url)); return server.fetch(url, init); };
+    await pushWatchProgressToNuvio(1, "progress-only", 600, 1200, 1, 1);
+    server.online();
+    assert.equal(await flushPendingNuvioMutations(), true);
+    assert.ok(paths.every((path) => !path.includes("watched_items")));
   });
 });

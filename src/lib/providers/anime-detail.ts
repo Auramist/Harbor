@@ -8,7 +8,12 @@ import {
   mergeTmdbEpisodes,
   isTextInLanguage,
 } from "@/lib/providers/anime-episode-build";
-import { animeKitsuMeta, type AnimeKitsuMeta } from "@/lib/providers/anime-kitsu-addon";
+import {
+  animeKitsuMeta,
+  animeKitsuMetaVersion,
+  animeKitsuMetaStoredAt,
+  type AnimeKitsuMeta,
+} from "@/lib/providers/anime-kitsu-addon";
 import { resolveAnimeEntry } from "@/lib/providers/anime-entry";
 import {
   applyAnidbSeasonWindow,
@@ -30,6 +35,8 @@ import { fetchTvdbArtwork } from "@/lib/providers/tvdb-proxy";
 import { tvdbEpisodesByType, tvdbEpisodesAbsolute, tvdbLangFromIso1 } from "@/lib/providers/tvdb";
 import {
   kitsuAnime,
+  kitsuEpisodeSourceVersion,
+  kitsuEpisodeSourceStoredAt,
   kitsuCharacters,
   kitsuEpisodes,
   kitsuMainTvSeries,
@@ -364,7 +371,35 @@ function buildSimilarRails(
 }
 
 type EpisodeSubscriber = (episodes: KitsuEpisode[], kitsuId: number) => void;
-const detailCache = new Map<string, { expires: number; value: AnimeDetailResult }>();
+const DETAIL_MAX_AGE = 5 * 60_000;
+const loadedSourceVersions = new WeakMap<AnimeDetailResult, string>();
+const detailCache = new Map<
+  string,
+  { expires: number; sourceVersion: string; value: AnimeDetailResult }
+>();
+function sourceTimes(metaId: string, kitsuId: number): number[] {
+  return [
+    animeKitsuMetaStoredAt?.(metaId),
+    animeKitsuMetaStoredAt?.(`kitsu:${kitsuId}`),
+    kitsuEpisodeSourceStoredAt?.(kitsuId),
+  ].filter((time): time is number => typeof time === "number" && Number.isFinite(time) && time > 0);
+}
+function sourceVersion(metaId: string, kitsuId: number): string {
+  return JSON.stringify([
+    animeKitsuMetaVersion?.(metaId),
+    animeKitsuMetaVersion?.(`kitsu:${kitsuId}`),
+    kitsuEpisodeSourceVersion?.(kitsuId),
+  ]);
+}
+function detailExpiry(metaId: string, kitsuId: number, ttl: number): number {
+  const now = Date.now();
+  const sourceExpiry = Math.min(
+    ...sourceTimes(metaId, kitsuId).map((time) => time + DETAIL_MAX_AGE),
+  );
+  // An outage may return usable stale sources; do not grant them a new full TTL.
+  return sourceExpiry <= now ? now + 30_000 : Math.min(now + ttl, sourceExpiry);
+}
+
 const detailInflight = new Map<
   string,
   {
@@ -399,7 +434,11 @@ export function animeDetails(
     }
   };
   const hit = detailCache.get(key);
-  if (hit && hit.expires > Date.now()) {
+  if (
+    hit &&
+    hit.expires > Date.now() &&
+    hit.sourceVersion === sourceVersion(meta.id, hit.value.kitsuId)
+  ) {
     if (onEpisodesReady) publish(onEpisodesReady, hit.value.episodes, hit.value.kitsuId);
     return Promise.resolve(hit.value);
   }
@@ -417,24 +456,45 @@ export function animeDetails(
   const pending: NonNullable<ReturnType<typeof detailInflight.get>> = {
     listeners,
     promise: loadAnimeDetails(settings, meta, (episodes, kitsuId) => {
+      if (generation !== mediaCacheGeneration()) return;
       pending.early = { episodes, kitsuId };
       for (const listener of listeners) publish(listener, episodes, kitsuId);
     })
       .then((result) => {
-        if (!result || result.episodes.length === 0 || generation !== mediaCacheGeneration()) return result;
-        const entry = { expires: Date.now() + 30_000, value: result };
+        if (!result || result.episodes.length === 0 || generation !== mediaCacheGeneration())
+          return result;
+        const loadedVersion = loadedSourceVersions.get(result) ?? sourceVersion(meta.id, result.kitsuId);
+        if (loadedVersion !== sourceVersion(meta.id, result.kitsuId)) {
+          if (detailInflight.get(key) === pending) detailInflight.delete(key);
+          return animeDetails(settings, meta, (episodes, kitsuId) => {
+            for (const listener of listeners) publish(listener, episodes, kitsuId);
+          });
+        }
+        const entry = {
+          expires: detailExpiry(meta.id, result.kitsuId, 30_000),
+          sourceVersion: loadedVersion,
+          value: result,
+        };
         detailCache.set(key, entry);
         while (detailCache.size > 16) detailCache.delete(detailCache.keys().next().value!);
         void result.enrichPromise
           .then((episodes) => {
-            if (detailCache.get(key) !== entry) return;
+            if (
+              detailCache.get(key) !== entry ||
+              entry.sourceVersion !== sourceVersion(meta.id, result.kitsuId)
+            )
+              return;
             entry.value = { ...result, episodes };
             // Partial native fallback lists retry sooner; a complete addon list can
             // keep its finalized metadata across overview remounts.
             const complete =
               episodes.length >= result.detail.numberOfEpisodes ||
               episodes.every((episode) => !!episode.streamId);
-            entry.expires = Date.now() + (complete ? 5 * 60_000 : 30_000);
+            entry.expires = detailExpiry(
+              meta.id,
+              result.kitsuId,
+              complete ? DETAIL_MAX_AGE : 30_000,
+            );
           })
           .catch(() => {});
         return result;
@@ -455,16 +515,18 @@ async function loadAnimeDetails(
 ): Promise<AnimeDetailResult | null> {
   let kitsuId = parseKitsuId(meta.id);
   let directMeta: AnimeKitsuMeta | null = null;
+  let originalAddonVersion = animeKitsuMetaVersion?.(meta.id);
   if (kitsuId == null) {
-    const entry = await resolveAnimeEntry(meta.id).catch(() => null);
+    const entry = await resolveAnimeEntry(meta.id, DETAIL_MAX_AGE).catch(() => null);
     if (entry) {
       kitsuId = entry.kitsuId;
       directMeta = entry.meta;
+      originalAddonVersion = animeKitsuMetaVersion?.(meta.id);
     }
   }
   if (kitsuId == null) return null;
 
-  let anime = await kitsuAnime(kitsuId);
+  let anime = await kitsuAnime(kitsuId, DETAIL_MAX_AGE);
   if (
     anime &&
     (anime.episodeCount == null || anime.episodeCount <= 1) &&
@@ -472,7 +534,7 @@ async function loadAnimeDetails(
   ) {
     const mainTv = await kitsuMainTvSeries(kitsuId).catch(() => null);
     if (mainTv != null && mainTv !== kitsuId) {
-      const mainAnime = await kitsuAnime(mainTv);
+      const mainAnime = await kitsuAnime(mainTv, DETAIL_MAX_AGE);
       if (mainAnime) {
         kitsuId = mainTv;
         anime = mainAnime;
@@ -480,10 +542,17 @@ async function loadAnimeDetails(
     }
   }
   if (!anime) return null;
-  const addonMetaPromise =
+  let addonVersion: number | undefined;
+  let kitsuVersion: number | undefined;
+  const addonMetaPromise = (
     directMeta && parseKitsuId(directMeta.id) === kitsuId && directMeta.videos.length > 0
       ? Promise.resolve(directMeta)
-      : animeKitsuMeta(`kitsu:${kitsuId}`).catch(() => null);
+      : animeKitsuMeta(`kitsu:${kitsuId}`, DETAIL_MAX_AGE).catch(() => null)
+  ).then((addon) => {
+    if (meta.id === `kitsu:${kitsuId}`) originalAddonVersion = animeKitsuMetaVersion?.(meta.id);
+    addonVersion = animeKitsuMetaVersion?.(`kitsu:${kitsuId}`);
+    return addon;
+  });
   // The addon's video IDs are immediately playable. Publish them before waiting
   // for characters, translations, mappings, and the full TVDB episode catalog.
   void addonMetaPromise
@@ -497,7 +566,10 @@ async function loadAnimeDetails(
   const localized = iso1.split("-")[0]?.toLowerCase() !== "en";
 
   // Queue the episode work before optional franchise/character requests.
-  const rawEpisodesPromise = kitsuEpisodes(kitsuId, 100);
+  const rawEpisodesPromise = kitsuEpisodes(kitsuId, 100, DETAIL_MAX_AGE).then((rows) => {
+    kitsuVersion = kitsuEpisodeSourceVersion?.(kitsuId);
+    return rows;
+  });
   const streamersPromise = kitsuStreamingLinks(kitsuId).catch(() => []);
   const franchisePromise = buildFranchise(kitsuId, anime).catch(() => [] as FranchiseEntry[]);
 
@@ -852,7 +924,7 @@ async function loadAnimeDetails(
     return patch;
   })().catch(() => ({}) as AnimeDetailExtras);
 
-  return {
+  const result: AnimeDetailResult = {
     detail,
     episodes,
     streamers,
@@ -864,4 +936,6 @@ async function loadAnimeDetails(
     heroBgPromise,
     kitsuId,
   };
+  loadedSourceVersions.set(result, JSON.stringify([originalAddonVersion, addonVersion, kitsuVersion]));
+  return result;
 }

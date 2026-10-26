@@ -5,7 +5,12 @@ import { safeFetch } from "@/lib/safe-fetch";
 import { adultContentHidden } from "@/lib/addons-store/adult-filter";
 import { episodeTextLanguage } from "@/lib/episode-text-language";
 import { createRequestScheduler } from "@/lib/request-scheduler";
-import { cachedMedia, metadataCacheTtl, onMediaCacheClear, mediaCacheGeneration } from "@/lib/media-cache";
+import {
+  loadMedia,
+  metadataCacheTtl,
+  onMediaCacheClear,
+  mediaCacheGeneration,
+} from "@/lib/media-cache";
 
 const KITSU = "https://kitsu.io/api/edge";
 
@@ -63,7 +68,8 @@ type Resource<T> = {
 };
 type Doc<D, I = unknown> = { data: D; included?: Resource<I>[]; meta?: { count?: number } };
 
-const cache = new Map<string, { v: unknown; t: number }>();
+const cache = new Map<string, { v: unknown; t: number; revision: number }>();
+let revision = 0;
 const TTL = 30 * 60 * 1000;
 const CACHE_MAX = 300;
 const requests = createRequestScheduler({ concurrency: 4 });
@@ -75,26 +81,34 @@ registerEvictable("kitsu", (aggressive) => {
   for (const [k, e] of cache) if (now - e.t > TTL) cache.delete(k);
 });
 
-async function get<T>(path: string): Promise<T | null> {
+async function get<T>(path: string, maxAge?: number): Promise<T | null> {
   const url = `${KITSU}${path}`;
   const hit = cache.get(url);
-  if (hit && Date.now() - hit.t < TTL) return hit.v as T;
+  if (hit && Date.now() - hit.t < Math.min(TTL, maxAge ?? Infinity)) return hit.v as T;
   const generation = mediaCacheGeneration();
-  return cachedMedia<T>("kitsu-resource", [url], () => requests.schedule(url, async () => {
-    try {
-      const r = await safeFetch(url, {
-        headers: { Accept: "application/vnd.api+json" },
-        signal: AbortSignal.timeout(15000),
-      });
-      if (r.status === 429) requests.pauseFor(1000);
-      if (!r.ok) return null;
-      const j = (await r.json()) as T;
-      if (generation === mediaCacheGeneration()) lruSet(cache, url, { v: j, t: Date.now() }, CACHE_MAX);
-      return j;
-    } catch {
-      return null;
-    }
-  }), { ttl: metadataCacheTtl });
+  return loadMedia<T>(
+    "kitsu-resource",
+    [url],
+    () =>
+      requests.schedule(url, async () => {
+        try {
+          const r = await safeFetch(url, {
+            headers: { Accept: "application/vnd.api+json" },
+            signal: AbortSignal.timeout(15000),
+          });
+          if (r.status === 429) requests.pauseFor(1000);
+          if (!r.ok) return null;
+          return (await r.json()) as T;
+        } catch {
+          return null;
+        }
+      }),
+    { ttl: metadataCacheTtl, maxAge },
+  ).then(({ value, storedAt }) => {
+    if (value && generation === mediaCacheGeneration())
+      lruSet(cache, url, { v: value, t: storedAt ?? Date.now(), revision: ++revision }, CACHE_MAX);
+    return value;
+  });
 }
 
 export type KitsuEpisode = {
@@ -214,9 +228,10 @@ export async function kitsuCoverImage(id: number): Promise<string | null> {
 type GenreAttrs = { name?: string; slug?: string; description?: string };
 type CategoryAttrs = { title?: string; slug?: string; description?: string };
 
-export async function kitsuAnime(id: number): Promise<KitsuAnimeDetail | null> {
+export async function kitsuAnime(id: number, maxAge?: number): Promise<KitsuAnimeDetail | null> {
   const j = await get<Doc<Resource<KitsuAnimeAttrs>, GenreAttrs | CategoryAttrs>>(
     `/anime/${id}?include=genres,categories`,
+    maxAge,
   );
   if (!j?.data) return null;
   const a = j.data.attributes;
@@ -355,13 +370,18 @@ export async function kitsuStreamingLinks(id: number): Promise<KitsuStreamer[]> 
   return out;
 }
 
-export async function kitsuEpisodes(id: number, limit = 60): Promise<KitsuEpisode[]> {
+export async function kitsuEpisodes(
+  id: number,
+  limit = 60,
+  maxAge?: number,
+): Promise<KitsuEpisode[]> {
   const PAGE = 20;
   if (!Number.isFinite(limit) || limit <= 0) return [];
   limit = Math.floor(limit);
   const page = (offset: number) =>
     get<Doc<Resource<KitsuEpisodeAttrs>[]>>(
       `/anime/${id}/episodes?page[limit]=${Math.min(PAGE, limit - offset)}&page[offset]=${offset}&sort=number`,
+      maxAge,
     );
   const first = await page(0);
   if (!first?.data?.length) return [];
@@ -580,4 +600,30 @@ export async function kitsuSearchAnime(query: string, limit = 8): Promise<KitsuS
     });
   }
   return out;
+}
+
+function isDetailEpisodeSource(url: string, id: number): boolean {
+  if (url === `${KITSU}/anime/${id}?include=genres,categories`) return true;
+  if (!url.startsWith(`${KITSU}/anime/${id}/episodes?`)) return false;
+  const page = /page\[limit\]=(\d+)&page\[offset\]=(\d+)/.exec(url);
+  // Other callers may cache shorter prefixes; their unused pages cannot age this snapshot.
+  return !!page && Number(page[1]) === 20 && Number(page[2]) < 100;
+}
+
+export function kitsuEpisodeSourceVersion(id: number): number {
+  let version = 0;
+  for (const [url, entry] of cache) {
+    if (isDetailEpisodeSource(url, id))
+      version = Math.max(version, entry.revision);
+  }
+  return version;
+}
+
+export function kitsuEpisodeSourceStoredAt(id: number): number | undefined {
+  let oldest = Infinity;
+  for (const [url, entry] of cache) {
+    if (isDetailEpisodeSource(url, id))
+      oldest = Math.min(oldest, entry.t);
+  }
+  return Number.isFinite(oldest) ? oldest : undefined;
 }

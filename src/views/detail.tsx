@@ -954,6 +954,7 @@ export function DetailView({
 
   useEffect(() => {
     let cancelled = false;
+    let generation = 0;
     // A plugin names an id of its own only sometimes. When it does, the same loaders that describe
     // every other title can describe this one too; when it does not, there is nothing to resolve
     // and the item keeps the provider's own answer alone.
@@ -961,122 +962,140 @@ export function DetailView({
       setLoading(false);
       return;
     }
-    setLoading(true);
-    // The catalogue types a row from the first type its provider declares, which is wrong for any
-    // provider that carries both movies and series. The bridge said which it returned, so the
-    // record is asked for as that kind rather than as the guess.
-    const lookup = capstanCanonicalId
-      ? { ...meta, id: capstanCanonicalId, type: capstanMeta?.kind ?? meta.type }
-      : meta;
-    let applyAnimeExtras: (() => void) | undefined;
-    const work = isAnime
-      ? animeDetails(
-          settingsRef.current,
-          detectedKitsu != null ? { ...meta, id: `kitsu:${detectedKitsu}` } : lookup,
-          (earlyEpisodes, kitsuId) => {
-            if (cancelled) return;
-            setAnimeCanonicalId(`kitsu:${kitsuId}`);
-            setAnimeEpisodes(earlyEpisodes);
-          },
-        ).then((res) => {
-          if (cancelled) return null;
-          if (!res) {
-            if (detectedKitsu != null) {
-              failedKitsu.current = detectedKitsu;
-              setDetectedKitsu(null);
+    const load = (refreshing = false) => {
+      const request = ++generation;
+      if (!refreshing) setLoading(true);
+      // The catalogue types a row from the first type its provider declares, which is wrong for any
+      // provider that carries both movies and series. The bridge said which it returned, so the
+      // record is asked for as that kind rather than as the guess.
+      const lookup = capstanCanonicalId
+        ? { ...meta, id: capstanCanonicalId, type: capstanMeta?.kind ?? meta.type }
+        : meta;
+      let applyAnimeExtras: (() => void) | undefined;
+      const work = isAnime
+        ? animeDetails(
+            settingsRef.current,
+            detectedKitsu != null ? { ...meta, id: `kitsu:${detectedKitsu}` } : lookup,
+            (earlyEpisodes, kitsuId) => {
+              if (cancelled || request !== generation) return;
+              setAnimeCanonicalId(`kitsu:${kitsuId}`);
+              setAnimeEpisodes(earlyEpisodes);
+            },
+          ).then((res) => {
+            if (cancelled || request !== generation) return null;
+            if (!res) {
+              if (detectedKitsu != null) {
+                failedKitsu.current = detectedKitsu;
+                setDetectedKitsu(null);
+              }
+              return null;
             }
-            return null;
-          }
-          setAnimeEpisodes(res.episodes);
-          setFranchise([]);
-          void res.franchisePromise
-            .then((fr) => {
-              if (!cancelled) setFranchise(fr);
-            })
-            .catch(() => {});
-          void res.enrichPromise
-            .then((eps) => {
-              if (!cancelled) setAnimeEpisodes(eps);
-            })
-            .catch(() => {});
-          void res.heroBgPromise
-            .then((bg) => {
-              if (cancelled || !bg) return;
-              setEnrichedBg(bg);
-              saveAnimeArt(meta.id, { bg });
-            })
-            .catch(() => {});
-          // Install the base detail before subscribing: on a warm cache this
-          // promise can settle before the shared work.then below runs.
-          applyAnimeExtras = () => {
-            void res.extrasPromise
-              .then((patch) => {
-                if (cancelled) return;
-                setDetail((prev) => (prev ? mergeAnimeDetailExtras(prev, patch) : prev));
-                if (patch.gallery?.backdrops?.length) setBackdrops(patch.gallery.backdrops);
-                saveAnimeArt(meta.id, {
-                  logo: patch.logo,
-                  backdrops: patch.gallery?.backdrops,
-                });
+            setAnimeEpisodes(res.episodes);
+            if (!refreshing) setFranchise([]);
+            void res.franchisePromise
+              .then((fr) => {
+                if (!cancelled && request === generation) setFranchise(fr);
               })
               .catch(() => {});
-          };
-          setAnimeCanonicalId(`kitsu:${res.kitsuId}`);
-          setStreamers(res.streamers);
-          setBackdrops(res.backdrops);
-          return res.detail;
-        })
-      : settingsRef.current.tmdbKey
-        ? tmdbDetails(settingsRef.current.tmdbKey, lookup).then((d) => d ?? cinemetaDetails(lookup))
-        : cinemetaDetails(lookup);
-    work
-      .then((d) => {
-        if (cancelled) return;
-        // The provider named the id, so it is the provider's claim that has to hold up: if the
-        // record it points at is not this title, the page is better off without it.
-        if (d && capstanCanonicalId && !titlesAgree(capstanMeta?.meta.name || meta.name, d.title)) {
-          setDetail(null);
-          setLoading(false);
-          return;
-        }
-        setDetail((prev) => {
-          if (!d) return d;
-          if (
-            prev &&
-            isAnime &&
-            !idAnime &&
-            (settingsRef.current.translateTitles || settingsRef.current.translateDescriptions)
-          ) {
-            const lang = settingsRef.current.tmdbLanguage || settingsRef.current.uiLanguage || "en";
-            const pickedTitle = settingsRef.current.translateTitles
-              ? pickLocalizedText([{ text: prev.title }, { text: d.title }], {
-                  forName: true,
-                  lang,
+            void res.enrichPromise
+              .then((eps) => {
+                if (!cancelled && request === generation) setAnimeEpisodes(eps);
+              })
+              .catch(() => {});
+            void res.heroBgPromise
+              .then((bg) => {
+                if (cancelled || request !== generation || !bg) return;
+                setEnrichedBg(bg);
+                saveAnimeArt(meta.id, { bg });
+              })
+              .catch(() => {});
+            // Install the base detail before subscribing: on a warm cache this
+            // promise can settle before the shared work.then below runs.
+            applyAnimeExtras = () => {
+              void res.extrasPromise
+                .then((patch) => {
+                  if (cancelled || request !== generation) return;
+                  setDetail((prev) => (prev ? mergeAnimeDetailExtras(prev, patch) : prev));
+                  if (patch.gallery?.backdrops?.length) setBackdrops(patch.gallery.backdrops);
+                  saveAnimeArt(meta.id, {
+                    logo: patch.logo,
+                    backdrops: patch.gallery?.backdrops,
+                  });
                 })
-              : undefined;
-            const pickedOverview = settingsRef.current.translateDescriptions
-              ? pickLocalizedText([{ text: prev.overview }, { text: d.overview }], { lang })
-              : undefined;
-            return {
-              ...d,
-              title: pickedTitle ?? (settingsRef.current.translateTitles ? prev.title : d.title),
-              overview:
-                pickedOverview ??
-                (settingsRef.current.translateDescriptions ? prev.overview : d.overview),
-              tagline: settingsRef.current.translateDescriptions ? prev.tagline : d.tagline,
+                .catch(() => {});
             };
+            setAnimeCanonicalId(`kitsu:${res.kitsuId}`);
+            setStreamers(res.streamers);
+            setBackdrops(res.backdrops);
+            return res.detail;
+          })
+        : settingsRef.current.tmdbKey
+          ? tmdbDetails(settingsRef.current.tmdbKey, lookup).then(
+              (d) => d ?? cinemetaDetails(lookup),
+            )
+          : cinemetaDetails(lookup);
+      work
+        .then((d) => {
+          if (cancelled || request !== generation) return;
+          // The provider named the id, so it is the provider's claim that has to hold up: if the
+          // record it points at is not this title, the page is better off without it.
+          if (
+            d &&
+            capstanCanonicalId &&
+            !titlesAgree(capstanMeta?.meta.name || meta.name, d.title)
+          ) {
+            setDetail(null);
+            setLoading(false);
+            return;
           }
-          return d;
+          setDetail((prev) => {
+            if (!d) return refreshing ? prev : d;
+            if (
+              prev &&
+              isAnime &&
+              !idAnime &&
+              (settingsRef.current.translateTitles || settingsRef.current.translateDescriptions)
+            ) {
+              const lang =
+                settingsRef.current.tmdbLanguage || settingsRef.current.uiLanguage || "en";
+              const pickedTitle = settingsRef.current.translateTitles
+                ? pickLocalizedText([{ text: prev.title }, { text: d.title }], {
+                    forName: true,
+                    lang,
+                  })
+                : undefined;
+              const pickedOverview = settingsRef.current.translateDescriptions
+                ? pickLocalizedText([{ text: prev.overview }, { text: d.overview }], { lang })
+                : undefined;
+              return {
+                ...d,
+                title: pickedTitle ?? (settingsRef.current.translateTitles ? prev.title : d.title),
+                overview:
+                  pickedOverview ??
+                  (settingsRef.current.translateDescriptions ? prev.overview : d.overview),
+                tagline: settingsRef.current.translateDescriptions ? prev.tagline : d.tagline,
+              };
+            }
+            return d;
+          });
+          setLoading(false);
+          applyAnimeExtras?.();
+        })
+        .catch(() => {
+          if (cancelled || request !== generation) return;
+          setLoading(false);
         });
-        setLoading(false);
-        applyAnimeExtras?.();
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setLoading(false);
-      });
+    };
+    const onWake = () => {
+      if (isAnime && document.visibilityState === "visible") load(true);
+    };
+    load();
+    window.addEventListener("focus", onWake);
+    document.addEventListener("visibilitychange", onWake);
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", onWake);
+      document.removeEventListener("visibilitychange", onWake);
     };
   }, [
     meta.id,

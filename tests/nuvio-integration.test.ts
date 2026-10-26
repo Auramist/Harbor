@@ -6,6 +6,7 @@ import {
   saveNuvioState,
   getNuvioAccountId,
   refreshNuvioSession,
+  nuvioFetch,
 } from "../src/lib/nuvio/nuvio-client";
 import {
   readCachedNuvioLibrary,
@@ -1110,7 +1111,7 @@ test("Nuvio watched snapshots page past 1000 and failed reads never prune local 
     assert.equal(items?.length, 1001, "all pages should be collected");
     assert.equal(pages, 2, "full first page requires a second request");
 
-    const key = "harbor.manualwatched.v1.nuvio.1";
+    const key = "harbor.manualwatched.v1.nuvio.v2.paging-account.slot.1";
     mockStorage.set(key, '["kitsu:12|1|200"]');
     globalThis.fetch = async () =>
       ({
@@ -1214,3 +1215,64 @@ test("simultaneous detail and home watched reconciliation shares one cloud snaps
     globalThis.fetch = originalFetch;
   }
 });
+
+for (const phase of ["expiry", "401"] as const) {
+  test(`Nuvio transport never refreshes or sends another account's payload after a switch during ${phase}`, async () => {
+    mockStorage.clear();
+    const state = {
+      session: {
+        access_token: "A-token",
+        refresh_token: "A-refresh",
+        expires_at: Math.floor(Date.now() / 1000) + (phase === "expiry" ? -1 : 3600),
+        token_type: "bearer",
+        user: { id: "A" },
+      },
+      profiles: [],
+      activeProfileIndex: 1,
+      lastSyncedAt: null,
+    };
+    saveNuvioState(state);
+    const oldFetch = globalThis.fetch;
+    let finish!: (response: Response) => void;
+    const waiting = new Promise<Response>((resolve) => {
+      finish = resolve;
+    });
+    const calls: string[] = [];
+    globalThis.fetch = async (url) => {
+      calls.push(String(url));
+      return waiting;
+    };
+    try {
+      const request = nuvioFetch("/rest/v1/watched_items", {
+        method: "POST",
+        body: '{"content_id":"A-only"}',
+      });
+      saveNuvioState({
+        ...state,
+        session: {
+          ...state.session,
+          access_token: "B-token",
+          refresh_token: "B-refresh",
+          user: { id: "B" },
+        },
+      });
+      finish(
+        new Response(
+          phase === "expiry"
+            ? JSON.stringify({ access_token: "refreshed-A", user: { id: "A" } })
+            : "[]",
+          { status: phase === "expiry" ? 200 : 401 },
+        ),
+      );
+      await assert.rejects(request, /owner changed/);
+      assert.equal(
+        calls.length,
+        1,
+        "no payload send or second-account refresh may follow the switch",
+      );
+      assert.equal(loadNuvioState().session?.user.id, "B");
+    } finally {
+      globalThis.fetch = oldFetch;
+    }
+  });
+}

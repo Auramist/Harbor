@@ -5,6 +5,7 @@ import ts from "typescript";
 
 function harness() {
   const data = new Map();
+  const events = new EventTarget();
   let parses = 0;
   let reads = 0;
   const storage = {
@@ -21,7 +22,7 @@ function harness() {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
     }).outputText;
     const module = { exports: {} };
-    new Function("module", "exports", "require", "localStorage", "JSON", output)(
+    new Function("module", "exports", "require", "localStorage", "JSON", "window", output)(
       module,
       module.exports,
       (name) => {
@@ -37,11 +38,12 @@ function harness() {
           return JSON.parse(...args);
         },
       },
+      events,
     );
     return module.exports;
   }
   const profiles = load("active-profile-id");
-  return { data, load, profiles, parses: () => parses, reads: () => reads };
+  return { data, load, profiles, events, parses: () => parses, reads: () => reads };
 }
 
 test("a large episode scan reads storage once and a fresh snapshot follows profile and watched changes", () => {
@@ -210,6 +212,10 @@ test("resume and watched flags use the same provider when legacy settings disagr
 
 test("bulk Nuvio watched flags are isolated and updated with one storage write", () => {
   const h = harness();
+  h.data.set(
+    "harbor.nuvio.state.v1",
+    JSON.stringify({ session: { user: { id: "bulk-account" } }, activeProfileIndex: 1 }),
+  );
   h.data.set("harbor.account-provider", "nuvio");
   let writes = 0;
   const flags = h.load("watched-flag", {
@@ -219,13 +225,79 @@ test("bulk Nuvio watched flags are isolated and updated with one storage write",
     react: {},
   });
   const ids = new Set(Array.from({ length: 1400 }, (_, i) => `tt-watch-${i}`));
-  flags.reconcileNuvioWatchedFlags(1, ids);
+  flags.reconcileNuvioWatchedFlags(1, ids, "bulk-account");
   assert.equal(writes, 1);
   assert.equal(flags.isWatchedFlagged("tt-watch-1399"), true);
-  flags.reconcileNuvioWatchedFlags(1, ids);
+  flags.reconcileNuvioWatchedFlags(1, ids, "bulk-account");
   assert.equal(writes, 1, "same snapshot should not write twice");
   h.data.set("harbor.account-provider", "stremio");
   assert.equal(flags.isWatchedFlagged("tt-watch-1399"), false);
   h.data.set("harbor.account-provider", "nuvio");
   assert.equal(flags.isWatchedFlagged("tt-watch-1399"), true);
+});
+
+test("Nuvio watched stores isolate accounts offline, retain both owners, and never adopt unowned legacy data", () => {
+  const h = harness();
+  h.data.set("harbor.account-provider", "nuvio");
+  h.data.set("harbor.watchedFlag.nuvio.v1.1", '["legacy"]');
+  h.data.set("harbor.watchedFlag.v1", '["legacy-stremio"]');
+  const persistCritical = (key, value) => h.data.set(key, value);
+  const deps = {
+    "./active-profile-id": h.profiles,
+    react: {},
+    "./storage-recovery": { persistCritical },
+  };
+  const movies = h.load("movie-watched", deps);
+  const flags = h.load("watched-flag", { ...deps, "./movie-watched": movies });
+  const manual = h.load("manual-watched", {
+    "./active-profile-id": h.profiles,
+    "@/lib/storage-recovery": { persistCritical },
+    "@/lib/render-cause": { noteNotify() {} },
+  });
+  const activate = (id, slot = 1) => {
+    h.data.set(
+      "harbor.nuvio.state.v1",
+      JSON.stringify({ session: id ? { user: { id } } : null, activeProfileIndex: slot }),
+    );
+    h.events.dispatchEvent(new Event("harbor:nuvio-state-changed"));
+  };
+  let notifications = 0;
+  movies.subscribeMovieWatched(() => notifications++);
+  activate("account-A");
+  assert.equal(flags.isWatchedFlagged("legacy"), false);
+  assert.equal(flags.isWatchedFlagged("legacy-stremio"), false);
+  flags.setWatchedFlag("movie-A", true);
+  movies.setMovieWatchedLocal("movie-A", true);
+  manual.setManualWatched("show", 1, 1, true);
+  manual.setManualWatched("show", 1, 2, false);
+  manual.recordManualWatchedMeta("show", { type: "series", name: "A's show" });
+  manual.dismissManualWatched("dismissed-A");
+  const beforeSwitch = notifications;
+  activate("account-B");
+  assert.ok(notifications > beforeSwitch, "same-slot account changes notify subscribed views");
+  assert.equal(flags.isWatchedFlagged("movie-A"), false);
+  assert.equal(movies.isMovieWatchedLocal("movie-A"), false);
+  assert.equal(manual.manualWatchedState("show", 1, 1), undefined);
+  assert.equal(manual.manualWatchedState("show", 1, 2), undefined);
+  assert.equal(manual.unwatchedAt("show", 1, 2), undefined);
+  assert.equal(manual.isManualWatchedDismissed("dismissed-A"), false);
+  assert.equal(manual.manualWatchedLibraryItems().length, 0);
+  flags.setWatchedFlag("movie-B", true);
+  activate("account-A", 2);
+  assert.equal(flags.isWatchedFlagged("movie-A"), false);
+  activate("account-A");
+  assert.equal(flags.isWatchedFlagged("movie-A"), true);
+  assert.equal(flags.isWatchedFlagged("movie-B"), false);
+  assert.equal(movies.isMovieWatchedLocal("movie-A"), true);
+  assert.equal(manual.manualWatchedState("show", 1, 1), true);
+  assert.equal(manual.manualWatchedState("show", 1, 2), false);
+  assert.equal(manual.manualWatchedLibraryItems()[0].name, "A's show");
+  activate(null);
+  const before = h.data.size;
+  flags.setWatchedFlag("unowned", true);
+  movies.setMovieWatchedLocal("unowned", true);
+  manual.setManualWatched("unowned", 1, 1, true);
+  assert.equal(flags.isWatchedFlagged("movie-A"), false);
+  assert.equal(h.data.size, before);
+  assert.equal(h.data.has("harbor.watchedFlag.nuvio.v1.1"), true);
 });

@@ -31,7 +31,11 @@ import {
 } from "@/lib/local-cw";
 import { clearResume, clearResumeBatch, createResumeReader } from "@/lib/resume";
 import { persistCritical } from "@/lib/storage-recovery";
-import { isNuvioProviderActive, getNuvioActiveSlot } from "@/lib/active-profile-id";
+import {
+  isNuvioProviderActive,
+  getNuvioActiveSlot,
+  nuvioWatchedScope,
+} from "@/lib/active-profile-id";
 import { readCachedNuvioPlaybackItems, writeCachedNuvioPlaybackItems } from "./nuvio-playback";
 
 export { isNuvioProviderActive } from "@/lib/active-profile-id";
@@ -95,7 +99,35 @@ function pendingKey(slot: number, accountId: string): string {
 function readPending(slot: number, accountId: string): PendingChanges {
   try {
     const value = JSON.parse(localStorage.getItem(pendingKey(slot, accountId)) ?? "{}");
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(
+      Object.entries(value).filter(([key, raw]) => {
+        const change = raw as PendingChange;
+        if (
+          !change ||
+          typeof change.token !== "string" ||
+          (change.kind !== "progress" && change.kind !== "watched") ||
+          typeof change.deleted !== "boolean" ||
+          !validRow(change.row, slot, accountId) ||
+          key !== `${change.kind}:${coordinate(change.row)}` ||
+          (change.except != null &&
+            (!Array.isArray(change.except) ||
+              change.except.some((item) => typeof item !== "string")))
+        )
+          return false;
+        if (!change.deleted && change.kind === "progress") {
+          const row = change.row as NuvioWatchProgress;
+          return (
+            typeof row.progress_key === "string" &&
+            Number.isFinite(row.progress_seconds) &&
+            Number.isFinite(row.duration_seconds) &&
+            row.progress_seconds >= 0 &&
+            row.duration_seconds >= 0
+          );
+        }
+        return true;
+      }),
+    ) as PendingChanges;
   } catch {
     return {};
   }
@@ -107,7 +139,7 @@ function recordPending(
   kind: PendingChange["kind"],
   rows: Array<NuvioWatchProgress | NuvioWatchedItem>,
   deleted = false,
-): void {
+): PendingChanges {
   const changes = readPending(slot, accountId);
   const token = crypto.randomUUID();
   for (const row of rows) {
@@ -127,12 +159,15 @@ function recordPending(
           held.row.episode == null
         ) {
           held.except = [...new Set([...(held.except ?? []), coordinate(row)])];
+          held.token = crypto.randomUUID();
         }
       }
     }
     changes[`${kind}:${coordinate(row)}`] = { token, kind, row, deleted };
   }
   persistCritical(pendingKey(slot, accountId), JSON.stringify(changes));
+  window.dispatchEvent(new CustomEvent("harbor:nuvio-mutations-pending"));
+  return Object.fromEntries(Object.entries(changes).filter(([, change]) => change.token === token));
 }
 
 function matchesChange(row: NuvioCoordinate, change: PendingChange): boolean {
@@ -175,12 +210,20 @@ function applyPending<T extends NuvioCoordinate>(
           : [];
     const blocked = candidates.filter((row) => matchesChange(row, change));
     const hit = blocked[0];
+    const rowTime = (row: NuvioCoordinate) =>
+      kind === "progress"
+        ? progressTime(row as NuvioWatchProgress)
+        : watchedTime(row as NuvioWatchedItem);
     const confirmed = change.deleted
       ? complete && !hit
       : hit &&
-        (kind !== "progress" ||
-          progressTime(hit as unknown as NuvioWatchProgress) >=
-            progressTime(change.row as NuvioWatchProgress));
+        (rowTime(hit) > rowTime(change.row) ||
+          (rowTime(hit) === rowTime(change.row) &&
+            (kind !== "progress" ||
+              ((hit as unknown as NuvioWatchProgress).progress_seconds ===
+                (change.row as NuvioWatchProgress).progress_seconds &&
+                (hit as unknown as NuvioWatchProgress).duration_seconds ===
+                  (change.row as NuvioWatchProgress).duration_seconds))));
     // Only a later read may acknowledge this exact mutation. An older request
     // cannot erase a replacement recorded while awaiting its response.
     if (atStart[key]?.token === change.token && confirmed) {
@@ -201,6 +244,283 @@ function applyPending<T extends NuvioCoordinate>(
         ]
       : rows;
   return { items, deleted };
+}
+
+const mutationLanes = new Map<string, Promise<boolean>>();
+
+function mutationOwnerCurrent(slot: number, accountId: string): boolean {
+  return (
+    isNuvioSignedIn() &&
+    isNuvioProviderActive() &&
+    getNuvioAccountId() === accountId &&
+    getNuvioActiveSlot() === slot
+  );
+}
+
+function sendRecordedChanges(
+  slot: number,
+  accountId: string,
+  recorded: PendingChanges,
+): Promise<boolean> {
+  const owner = `${accountId}:${slot}`;
+  const previous = mutationLanes.get(owner) ?? Promise.resolve(true);
+  const work = previous
+    .catch(() => false)
+    .then(async () => {
+      let ok = true;
+      for (const [key, change] of Object.entries(recorded)) {
+        const current = () =>
+          mutationOwnerCurrent(slot, accountId) &&
+          readPending(slot, accountId)[key]?.token === change.token;
+        if (!current()) {
+          ok = false;
+          continue;
+        }
+        try {
+          ok = (await sendPendingChange(slot, accountId, change, current)) && ok;
+        } catch {
+          ok = false;
+        }
+      }
+      return ok;
+    });
+  mutationLanes.set(owner, work);
+  void work.finally(() => {
+    if (mutationLanes.get(owner) === work) mutationLanes.delete(owner);
+  });
+  return work;
+}
+
+async function sendPendingChange(
+  slot: number,
+  accountId: string,
+  change: PendingChange,
+  current: () => boolean,
+): Promise<boolean> {
+  const row = change.row;
+  const episode = row.season != null && row.episode != null;
+  const table = change.kind === "progress" ? "watch_progress" : "watched_items";
+  const clientId = getOrCreateSyncClientId();
+  const request = async (url: string, options: RequestInit) => {
+    if (!current()) return false;
+    try {
+      return (await nuvioFetch(url, options, current)).ok && current();
+    } catch {
+      return false;
+    }
+  };
+  const rpc = (name: string, args: Record<string, unknown>) =>
+    request(`/rest/v1/rpc/${name}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_profile_id: slot, ...args, p_origin_client_id: clientId }),
+    });
+  if (!change.deleted) {
+    const progress = row as NuvioWatchProgress;
+    const watched = row as NuvioWatchedItem;
+    const payload =
+      change.kind === "progress"
+        ? {
+            content_id: row.content_id,
+            content_type: episode ? "series" : "movie",
+            video_id: episode ? `${row.content_id}:${row.season}:${row.episode}` : row.content_id,
+            season: row.season ?? null,
+            episode: row.episode ?? null,
+            progress_key: progress.progress_key,
+            position: progress.progress_seconds * 1000,
+            duration: progress.duration_seconds * 1000,
+            last_watched: progress.last_watched,
+          }
+        : {
+            content_id: row.content_id,
+            content_type: watched.content_type || (episode ? "series" : "movie"),
+            title: watched.title || "",
+            season: row.season ?? null,
+            episode: row.episode ?? null,
+            watched_at: watched.watched_at,
+          };
+    const success = await rpc(`sync_push_${table}`, {
+      [change.kind === "progress" ? "p_entries" : "p_items"]: [payload],
+    });
+    if (success && change.kind === "progress") return true;
+    const tableSuccess = await request(`/rest/v1/${table}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ profile_id: slot, ...payload }),
+    });
+    return success || tableSuccess;
+  }
+  let targets: NuvioCoordinate[] = [row];
+  let serverProgress: NuvioWatchProgress[] = [];
+  const titleWide = row.season == null && row.episode == null;
+  if (titleWide && change.except?.length) {
+    const rows = await readTableSnapshot<NuvioWatchProgress>(
+      table,
+      slot,
+      accountId,
+      current,
+      false,
+    );
+    if (!rows || !current()) return false;
+    targets = rows.filter((value) => matchesChange(value, change));
+    serverProgress = rows;
+    if (!targets.length) return true;
+  } else if (titleWide && change.kind === "progress") {
+    // Harvest legacy progress keys as well as the canonical coordinate aliases.
+    if (!current()) return false;
+    try {
+      const res = await nuvioFetch(
+        `/rest/v1/watch_progress?profile_id=eq.${slot}&content_id=eq.${encodeURIComponent(row.content_id)}&select=content_id,progress_key,season,episode`,
+        {},
+        current,
+      );
+      if (!current()) return false;
+      const rows: unknown = res.ok ? await res.json() : null;
+      if (Array.isArray(rows)) serverProgress = rows;
+    } catch {
+      /* The title-wide table delete still covers unknown keys. */
+    }
+  }
+  const keys = new Set<string>();
+  for (const target of targets) {
+    if (target.season != null && target.episode != null) {
+      keys.add(`${target.content_id}_s${target.season}e${target.episode}`);
+      keys.add(`${target.content_id}:${target.season}:${target.episode}`);
+    } else keys.add(target.content_id);
+  }
+  for (const value of serverProgress) {
+    if (matchesChange(value, change) && value.progress_key) keys.add(value.progress_key);
+  }
+  const success = await rpc(`sync_delete_${table}`, {
+    p_keys:
+      change.kind === "progress"
+        ? [...keys]
+        : targets.map((target) => ({
+            content_id: target.content_id,
+            season: target.season ?? null,
+            episode: target.episode ?? null,
+          })),
+  });
+  let tableSuccess = true;
+  for (const target of targets) {
+    let url = `/rest/v1/${table}?profile_id=eq.${slot}&content_id=eq.${encodeURIComponent(target.content_id)}`;
+    if (target.season != null) url += `&season=eq.${target.season}`;
+    if (target.episode != null) url += `&episode=eq.${target.episode}`;
+    tableSuccess = (await request(url, { method: "DELETE" })) && tableSuccess;
+  }
+  return success || tableSuccess;
+}
+
+const mutationFlushes = new Map<string, Promise<boolean>>();
+
+export function flushPendingNuvioMutations(): Promise<boolean> {
+  const slot = getNuvioActiveSlot();
+  const accountId = getNuvioAccountId();
+  if (!accountId || !mutationOwnerCurrent(slot, accountId)) return Promise.resolve(false);
+  const owner = `${accountId}:${slot}`;
+  const existing = mutationFlushes.get(owner);
+  if (existing) return existing;
+  const work = (async () => {
+    if (!Object.keys(readPending(slot, accountId)).length) return true;
+    const kinds = new Set(Object.values(readPending(slot, accountId)).map((change) => change.kind));
+    const confirm = async () => {
+      if (!mutationOwnerCurrent(slot, accountId)) return;
+      if (kinds.has("watched")) await reconcileNuvioWatched(slot);
+      if (!mutationOwnerCurrent(slot, accountId)) return;
+      if (kinds.has("progress")) await pullWatchProgressFromNuvio(slot);
+    };
+    // A newer remote checkpoint can acknowledge/supersede an older queued write.
+    await confirm();
+    if (!mutationOwnerCurrent(slot, accountId)) return false;
+    const pending = readPending(slot, accountId);
+    if (!Object.keys(pending).length) return true;
+    for (const change of Object.values(pending)) kinds.add(change.kind);
+    const sent = await sendRecordedChanges(slot, accountId, pending);
+    if (!mutationOwnerCurrent(slot, accountId)) return false;
+    if (kinds.has("watched")) lastFullSyncAt.delete(`watched:${accountId}:${slot}`);
+    await confirm();
+    return sent && Object.keys(readPending(slot, accountId)).length === 0;
+  })();
+  mutationFlushes.set(owner, work);
+  void work
+    .finally(() => {
+      if (mutationFlushes.get(owner) === work) mutationFlushes.delete(owner);
+    })
+    .catch(() => {});
+  return work;
+}
+
+/** One lifecycle for delivery, independent of which view is mounted. */
+export function startNuvioMutationRetry(): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let running = false;
+  let delay = 1000;
+  let owner = "";
+  const schedule = () => {
+    if (timer) clearTimeout(timer);
+    if (stopped) return;
+    const accountId = getNuvioAccountId();
+    const slot = getNuvioActiveSlot();
+    if (
+      !accountId ||
+      !mutationOwnerCurrent(slot, accountId) ||
+      !Object.keys(readPending(slot, accountId)).length
+    )
+      return;
+    timer = setTimeout(run, delay);
+  };
+  const run = async () => {
+    timer = undefined;
+    if (running || stopped) return;
+    running = true;
+    try {
+      const complete = await flushPendingNuvioMutations();
+      delay = complete ? 1000 : Math.min(delay * 2, 60_000);
+    } catch {
+      delay = Math.min(delay * 2, 60_000);
+    } finally {
+      running = false;
+      schedule();
+    }
+  };
+  const wake = () => {
+    delay = 1000;
+    schedule();
+  };
+  const onOwner = () => {
+    const next = `${isNuvioProviderActive()}:${getNuvioAccountId()}:${getNuvioActiveSlot()}`;
+    if (next === owner) return;
+    owner = next;
+    wake();
+  };
+  const onVisible = () => {
+    if (document.visibilityState === "visible") wake();
+  };
+  const events = [
+    "harbor:nuvio-state-changed",
+    "harbor:nuvio-profile-changed",
+    "harbor:account-provider-changed",
+  ];
+  for (const event of events) window.addEventListener(event, onOwner);
+  window.addEventListener("online", wake);
+  window.addEventListener("harbor:nuvio-mutations-pending", wake);
+  document.addEventListener("visibilitychange", onVisible);
+  onOwner();
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    for (const event of events) window.removeEventListener(event, onOwner);
+    window.removeEventListener("online", wake);
+    window.removeEventListener("harbor:nuvio-mutations-pending", wake);
+    document.removeEventListener("visibilitychange", onVisible);
+  };
+}
+
+function watchedTime(row: NuvioWatchedItem): number {
+  const value =
+    typeof row.watched_at === "number" ? row.watched_at : Date.parse(row.watched_at ?? "");
+  return Number.isFinite(value) ? value : 0;
 }
 
 function progressTime(row: NuvioWatchProgress): number {
@@ -350,7 +670,6 @@ export async function pushWatchProgressToNuvio(
 
   const accountId = getNuvioAccountId();
   if (!accountId) return false;
-  const sameAccount = () => isNuvioSignedIn() && getNuvioAccountId() === accountId;
   const profileIndex = resolveNuvioProfileIndex(harborProfileId);
   const progSec = Math.max(0, Math.round(progressSeconds));
   const durSec = Math.max(0, Math.round(durationSeconds));
@@ -381,7 +700,7 @@ export async function pushWatchProgressToNuvio(
     background,
   };
 
-  recordPending(profileIndex, accountId, "progress", [payload]);
+  const recorded = recordPending(profileIndex, accountId, "progress", [payload]);
 
   // Update local slot cache immediately for instant snappy responsiveness
   try {
@@ -421,75 +740,7 @@ export async function pushWatchProgressToNuvio(
     );
   } catch {}
 
-  // Try official sync_push_watch_progress RPC first (matches NuvioMobile)
-  try {
-    const clientId = getOrCreateSyncClientId();
-    const rpcRes = await nuvioFetch("/rest/v1/rpc/sync_push_watch_progress", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        p_profile_id: profileIndex,
-        p_entries: [
-          {
-            content_id: contentId,
-            content_type: season != null && episode != null ? "series" : "movie",
-            video_id:
-              season != null && episode != null
-                ? `${contentId}:${season}:${episode}`
-                : contentId,
-            season: season ?? null,
-            episode: episode ?? null,
-            position: progSec * 1000,
-            duration: durSec * 1000,
-            last_watched: nowEpoch,
-            progress_key: progressKey,
-          },
-        ],
-        p_origin_client_id: clientId,
-      }),
-    });
-    if (rpcRes.ok) {
-      console.info(`[nuvio-sync] watch progress pushed via RPC for profile ${profileIndex}: ${progressKey} (${progSec}s / ${durSec}s)`);
-      return true;
-    }
-  } catch {
-    // Fall back to table upsert
-  }
-
-  if (!sameAccount()) return false;
-  try {
-    const res = await nuvioFetch("/rest/v1/watch_progress", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates",
-      },
-      body: JSON.stringify({
-        profile_id: profileIndex,
-        content_id: contentId,
-        content_type: season != null && episode != null ? "series" : "movie",
-        video_id:
-          season != null && episode != null
-            ? `${contentId}:${season}:${episode}`
-            : contentId,
-        progress_key: progressKey,
-        position: progSec * 1000,
-        duration: durSec * 1000,
-        season: season ?? null,
-        episode: episode ?? null,
-        last_watched: nowEpoch,
-      }),
-    });
-
-    if (res.ok) {
-      console.info(`[nuvio-sync] watch progress pushed via table upsert for profile ${profileIndex}: ${progressKey}`);
-      return true;
-    }
-    return res.ok;
-  } catch (err) {
-    console.warn("[nuvio] failed to push watch progress", err);
-    return false;
-  }
+  return sendRecordedChanges(profileIndex, accountId, recorded);
 }
 
 /**
@@ -509,10 +760,9 @@ export async function pushWatchedItemToNuvio(
   if (!isNuvioSignedIn() || items.length === 0) return false;
   const accountId = getNuvioAccountId();
   if (!accountId) return false;
-  const sameAccount = () => isNuvioSignedIn() && getNuvioAccountId() === accountId;
   const profileIndex = resolveNuvioProfileIndex(harborProfileId);
 
-  recordPending(
+  const recorded = recordPending(
     profileIndex,
     accountId,
     "watched",
@@ -527,63 +777,7 @@ export async function pushWatchedItemToNuvio(
     })),
   );
 
-  let rpcSuccess = false;
-  // 1. Try official sync_push_watched_items RPC (matching Nuvio Mobile)
-  try {
-    const clientId = getOrCreateSyncClientId();
-    const syncItems = items.map((item) => ({
-      content_id: item.contentId,
-      content_type: item.contentType || (item.season != null && item.episode != null ? "series" : "movie"),
-      title: item.title || "",
-      season: item.season ?? null,
-      episode: item.episode ?? null,
-      watched_at: item.watchedAt || Date.now(),
-    }));
-    const rpcRes = await nuvioFetch("/rest/v1/rpc/sync_push_watched_items", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        p_profile_id: profileIndex,
-        p_items: syncItems,
-        p_origin_client_id: clientId,
-      }),
-    });
-    if (rpcRes.ok) {
-      rpcSuccess = true;
-      console.info(`[nuvio-sync] watched items pushed via RPC for profile ${profileIndex} (${syncItems.length} items)`);
-    } else {
-      console.warn(`[nuvio-sync] RPC push watched items response not ok: ${rpcRes.status}`);
-    }
-  } catch (err) {
-    console.warn("[nuvio-sync] RPC push watched items error:", err);
-  }
-
-  if (!sameAccount()) return false;
-  // 2. ALSO execute direct table upsert to guarantee clean state and persistence
-  try {
-    const payloads = items.map((item) => ({
-      profile_id: profileIndex,
-      content_id: item.contentId,
-      content_type: item.contentType || (item.season != null && item.episode != null ? "series" : "movie"),
-      title: item.title || "",
-      season: item.season ?? null,
-      episode: item.episode ?? null,
-      watched_at: item.watchedAt || Date.now(),
-    }));
-    const res = await nuvioFetch("/rest/v1/watched_items", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates",
-      },
-      body: JSON.stringify(payloads.length === 1 ? payloads[0] : payloads),
-    });
-    if (res.ok) return true;
-  } catch (err) {
-    console.warn("[nuvio] failed to mark watched item via table upsert", err);
-  }
-
-  return rpcSuccess;
+  return sendRecordedChanges(profileIndex, accountId, recorded);
 }
 
 /**
@@ -600,10 +794,9 @@ export async function deleteWatchedItemFromNuvio(
   if (!isNuvioSignedIn() || keys.length === 0) return false;
   const accountId = getNuvioAccountId();
   if (!accountId) return false;
-  const sameAccount = () => isNuvioSignedIn() && getNuvioAccountId() === accountId;
   const profileIndex = resolveNuvioProfileIndex(harborProfileId);
 
-  recordPending(
+  const recorded = recordPending(
     profileIndex,
     accountId,
     "watched",
@@ -616,45 +809,7 @@ export async function deleteWatchedItemFromNuvio(
     true,
   );
 
-  // 1. Try official sync_delete_watched_items RPC (matching Nuvio Mobile)
-  let rpcSuccess = false;
-  try {
-    const clientId = getOrCreateSyncClientId();
-    const rpcRes = await nuvioFetch("/rest/v1/rpc/sync_delete_watched_items", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        p_profile_id: profileIndex,
-        p_keys: keys.map((k) => ({
-          content_id: k.contentId,
-          season: k.season ?? null,
-          episode: k.episode ?? null,
-        })),
-        p_origin_client_id: clientId,
-      }),
-    });
-    if (rpcRes.ok) {
-      rpcSuccess = true;
-      console.info(`[nuvio-sync] watched items deleted via RPC for profile ${profileIndex} (${keys.length} keys)`);
-    }
-  } catch {}
-
-  // 2. ALSO execute direct table delete to guarantee clean state
-  try {
-    let tableSuccess = true;
-    for (const k of keys) {
-      if (!sameAccount()) return false;
-      let url = `/rest/v1/watched_items?profile_id=eq.${profileIndex}&content_id=eq.${encodeURIComponent(k.contentId)}`;
-      if (k.season != null) url += `&season=eq.${k.season}`;
-      if (k.episode != null) url += `&episode=eq.${k.episode}`;
-      const res = await nuvioFetch(url, { method: "DELETE" });
-      tableSuccess = tableSuccess && res.ok;
-    }
-    return tableSuccess || rpcSuccess;
-  } catch (err) {
-    console.warn("[nuvio] failed to delete watched item", err);
-    return rpcSuccess;
-  }
+  return sendRecordedChanges(profileIndex, accountId, recorded);
 }
 
 /**
@@ -860,10 +1015,10 @@ async function reconcileNuvioWatchedOnce(harborProfileId?: string | number): Pro
   if (!accountId) return;
   const pending = readPending(profileIndex, accountId);
   const keys = [
-    `harbor.watchedFlag.nuvio.v1.${profileIndex}`,
-    `harbor.moviewatched.nuvio.v1.${profileIndex}`,
-    `harbor.manualwatched.v1.nuvio.${profileIndex}`,
-    `harbor.manualunwatched.v1.nuvio.${profileIndex}`,
+    `harbor.watchedFlag.${nuvioWatchedScope(profileIndex, accountId)}`,
+    `harbor.moviewatched.${nuvioWatchedScope(profileIndex, accountId)}`,
+    `harbor.manualwatched.v1.${nuvioWatchedScope(profileIndex, accountId)}`,
+    `harbor.manualunwatched.v1.${nuvioWatchedScope(profileIndex, accountId)}`,
   ];
   const before = keys.map((key) => localStorage.getItem(key));
   const pulled = await pullWatchedItemsFromNuvio(profileIndex, {
@@ -904,12 +1059,12 @@ async function reconcileNuvioWatchedOnce(harborProfileId?: string | number): Pro
 
   // 1. Reconcile episodes with local storage: adds server episodes and removes
   // unflagged episodes (handling single unmarks, up-to unmarks, and whole-season unmarks from Nuvio mobile)
-  reconcileNuvioWatchedEpisodes(profileIndex, serverEpisodeKeys);
+  reconcileNuvioWatchedEpisodes(profileIndex, serverEpisodeKeys, accountId);
 
   // A complete snapshot is authoritative. Commit once, not once per item:
   // repeated writes were O(n^2) on shows with thousands of watched episodes.
-  reconcileNuvioWatchedFlags(profileIndex, serverWatchedIds);
-  reconcileNuvioMovieWatched(profileIndex, serverMovieIds);
+  reconcileNuvioWatchedFlags(profileIndex, serverWatchedIds, accountId);
+  reconcileNuvioMovieWatched(profileIndex, serverMovieIds, accountId);
 
   window.dispatchEvent(
     new CustomEvent("harbor:nuvio-watched-reconciled", { detail: { profileIndex } }),
@@ -929,11 +1084,10 @@ export async function deleteEpisodeWatchProgressFromNuvio(
   if (!isNuvioSignedIn()) return false;
   const accountId = getNuvioAccountId();
   if (!accountId) return false;
-  const sameAccount = () => isNuvioSignedIn() && getNuvioAccountId() === accountId;
   const profileIndex = resolveNuvioProfileIndex(harborProfileId);
   const normalizedContentId = contentId.trim();
   if (!normalizedContentId) return false;
-  recordPending(
+  const recorded = recordPending(
     profileIndex,
     accountId,
     "progress",
@@ -981,34 +1135,7 @@ export async function deleteEpisodeWatchProgressFromNuvio(
     }),
   );
 
-  // 4. Call sync_delete_watch_progress RPC
-  if (!sameAccount()) return false;
-  let rpcSuccess = false;
-  try {
-    const clientId = getOrCreateSyncClientId();
-    const rpcRes = await nuvioFetch("/rest/v1/rpc/sync_delete_watch_progress", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        p_profile_id: profileIndex,
-        p_keys: keysToDelete,
-        p_origin_client_id: clientId,
-      }),
-    });
-    if (rpcRes.ok) rpcSuccess = true;
-  } catch {}
-
-  if (!sameAccount()) return false;
-  // 5. Also execute table delete for this specific episode
-  try {
-    const res = await nuvioFetch(
-      `/rest/v1/watch_progress?profile_id=eq.${profileIndex}&content_id=eq.${encodeURIComponent(normalizedContentId)}&season=eq.${season}&episode=eq.${episode}`,
-      { method: "DELETE" },
-    );
-    if (res.ok) return true;
-  } catch {}
-
-  return rpcSuccess;
+  return sendRecordedChanges(profileIndex, accountId, recorded);
 }
 
 /**
@@ -1025,11 +1152,10 @@ export async function deleteWatchProgressFromNuvio(
 
   const accountId = getNuvioAccountId();
   if (!accountId) return false;
-  const sameAccount = () => isNuvioSignedIn() && getNuvioAccountId() === accountId;
   const profileIndex = resolveNuvioProfileIndex(harborProfileId);
   const normalizedContentId = contentId.trim();
   if (!normalizedContentId) return false;
-  recordPending(
+  const recorded = recordPending(
     profileIndex,
     accountId,
     "progress",
@@ -1087,69 +1213,14 @@ export async function deleteWatchProgressFromNuvio(
     }),
   );
 
-  // 2. Query Supabase for ALL progress keys currently on the server for this content
-  try {
-    const serverKeysRes = await nuvioFetch(
-      `/rest/v1/watch_progress?profile_id=eq.${profileIndex}&content_id=eq.${encodeURIComponent(normalizedContentId)}&select=progress_key,season,episode`,
-    );
-    if (serverKeysRes.ok) {
-      const serverRows = (await serverKeysRes.json()) as any[];
-      if (Array.isArray(serverRows)) {
-        for (const row of serverRows) {
-          if (row.progress_key) keysToDelete.add(row.progress_key);
-          if (row.season != null && row.episode != null) {
-            keysToDelete.add(`${normalizedContentId}_s${row.season}e${row.episode}`);
-            keysToDelete.add(`${normalizedContentId}:${row.season}:${row.episode}`);
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.warn("[nuvio-sync] failed to query server keys before delete", err);
-  }
-
-  if (!sameAccount()) return false;
-  const keysArray = Array.from(keysToDelete);
-  const clientId = getOrCreateSyncClientId();
-
-  // 3. Call official sync_delete_watch_progress RPC (emits delta delete events for Nuvio Mobile)
-  if (!sameAccount()) return false;
-  let rpcSuccess = false;
-  try {
-    const rpcRes = await nuvioFetch("/rest/v1/rpc/sync_delete_watch_progress", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        p_profile_id: profileIndex,
-        p_keys: keysArray,
-        p_origin_client_id: clientId,
-      }),
-    });
-    if (rpcRes.ok) {
-      rpcSuccess = true;
-      console.info(`[nuvio-sync] watch progress deleted via RPC for profile ${profileIndex}:`, keysArray);
-    }
-  } catch (rpcErr) {
-    console.warn("[nuvio-sync] RPC delete error:", rpcErr);
-  }
-
-  if (!sameAccount()) return false;
-  // 4. ALWAYS ALSO execute direct table delete to guarantee ZERO lingering zombie rows
-  try {
-    const res = await nuvioFetch(
-      `/rest/v1/watch_progress?profile_id=eq.${profileIndex}&content_id=eq.${encodeURIComponent(normalizedContentId)}`,
-      { method: "DELETE" },
-    );
-    rpcSuccess = rpcSuccess || res.ok;
-  } catch (err) {
-    console.warn("[nuvio-sync] table delete error:", err);
-  }
-
-  if (!sameAccount()) return false;
-  // 5. Dismiss Next-Up in mobile profile settings blob so mobile Up-Next engine never resurrects it
-  void dismissNextUpInNuvioCloud(profileIndex, normalizedContentId, season, episode);
-
-  return rpcSuccess;
+  const delivered = await sendRecordedChanges(profileIndex, accountId, recorded);
+  if (
+    isNuvioSignedIn() &&
+    getNuvioAccountId() === accountId &&
+    getNuvioActiveSlot() === profileIndex
+  )
+    await dismissNextUpInNuvioCloud(profileIndex, normalizedContentId, season, episode);
+  return delivered;
 }
 
 function reconcileNuvioProgressHistory(

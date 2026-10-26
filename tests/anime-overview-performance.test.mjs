@@ -46,7 +46,15 @@ function kitsuFixture(fetch) {
       "src/lib/providers/kitsu.ts",
       {
         "@/lib/cache": cache,
-        "@/lib/media-cache": { cachedMedia: (_namespace, _scope, loader) => loader(), metadataCacheTtl: () => 12 * 60 * 60_000, onMediaCacheClear() {}, mediaCacheGeneration: () => 0 },
+        "@/lib/media-cache": {
+          loadMedia: async (_namespace, _scope, loader) => ({
+            value: await loader(),
+            storedAt: now,
+          }),
+          metadataCacheTtl: () => 12 * 60 * 60_000,
+          onMediaCacheClear() {},
+          mediaCacheGeneration: () => 0,
+        },
         "@/lib/request-scheduler": scheduler,
         "@/lib/maintenance": { registerEvictable: () => {} },
         "@/lib/safe-fetch": { safeFetch: fetch },
