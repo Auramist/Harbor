@@ -6,11 +6,11 @@ Shipyard uses **one** `harbor.exe`, never two interchangeable full builds. Its o
 
 The separate native Music process owns local MPV playback, two decks, audio DSP/settings, meters, eight-band spectrum, source header handling, virtual-device broadcast mirroring, tag reading, M3U parsing, and Spotify Premium audio playback. The core retains the existing Music commands, connector registration/account management, Spotify/Last.fm secret storage and library databases; this preserves application identity and user data.
 
-## Experimental build
+## Component build
 
-Run `powershell -ExecutionPolicy Bypass -File scripts/build-shipyard-modular-music.ps1 -BuildInstaller` to build the separate Music module, optimized alternate core, and a **single** beta Shipyard installer. The alternate core is compiled with `--no-default-features --features games,plugins,music,music-sidecar,tauri/custom-protocol`; this excludes the legacy native MPV Music engine and legacy Spotify audio output player from Harbor. The default production build retains its original legacy features.
+Run `pnpm shipyard:modules` to build the sidecar core, the separate Music module, the optional Games engine and Extensions runtime, and a **single** Shipyard installer. The core is compiled with `--no-default-features --features games,plugins,music,music-sidecar,tauri/custom-protocol`; this excludes the legacy native MPV Music engine and legacy Spotify audio output player from Harbor. The official Shipyard release workflow uses the same command. `pnpm shipyard` remains the local legacy-Music fallback.
 
-The experimental packaging process must set `HARBOR_MUSIC_CORE_EXE` to this sidecar-mode core and `HARBOR_MUSIC_MODULE_EXPERIMENTAL=1`. Both inputs and the Music manifest must match Harbor's version and ABI. The payload verifier compares hashes, confirms the optional module exists, and rejects a second Harbor executable. Nothing is signed, published or installed automatically.
+The packaging process sets `HARBOR_MUSIC_CORE_EXE`, `HARBOR_MUSIC_MODULE_DIR` and `HARBOR_MUSIC_MODULE_EXPERIMENTAL=1`. Both inputs and the Music manifest must match Harbor's version and ABI. The payload verifier compares hashes, confirms the optional module exists, and rejects a second Harbor executable.
 
 ## Data compatibility
 
@@ -19,14 +19,16 @@ Installed Music bytes are removable, but `music.db`, profile music databases, `s
 ## Verified checks
 
 - Both the sidecar-mode and original Harbor source compile.
-- The native Music module has passed 42 Rust tests, including DSP/FFT tests.
+- The native Music module has passed 43 Rust tests, including DSP/FFT tests.
 - The versioned native IPC protocol passes a silent native playback exercise with virtual broadcast, pause/seek, metering and events.
 - Shipyard feature-selection and data preservation tests have passed.
 - The frontend production build and Music installation-availability tests have passed.
+- The modular installer has passed an install/repair exercise with Music checked and unchecked.
+- Spotify Premium playback has been verified end to end on the installed sidecar build.
 
 ## Still required before production enablement
 
-An actual Windows app-level end-to-end regression with live Spotify Premium credentials, YouTube Music, local folders, DJ decks, taskbar/media keys and virtual devices is needed, along with update/rollback testing on installed versions. A silent module smoke test **does not** substitute for that. The optional frontend Music bundle remains within the core's web assets (lazy imported, not physically removed when Music is unchecked). Thus this phase makes the **native** implementation removable, not every byte of Music code or frontend resources. The Shipyard download itself always includes optional payloads because installation is offline.
+A full Windows app-level regression with YouTube Music, local folders, DJ decks, taskbar/media keys and virtual devices is still needed, along with update/rollback testing on installed versions. A silent module smoke test **does not** substitute for that. The optional frontend Music bundle remains within the core's web assets (lazy imported, not physically removed when Music is unchecked). Thus this phase makes the **native** implementation removable, not every byte of Music code or frontend resources. The Shipyard download itself always includes optional payloads because installation is offline.
 
 ## Native extraction groundwork
 
