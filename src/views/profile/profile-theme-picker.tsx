@@ -11,7 +11,7 @@ import {
   normalizeHexColor,
   parseProfileTheme,
   stripProfileTheme,
-  withProfileTheme,
+  themeCustomizationRecord,
   type CustomProfileColors,
   type ProfilePalette,
   type ProfilePaletteId,
@@ -172,7 +172,9 @@ export function ProfileThemePicker({
   const [busy, setBusy] = useState<Busy>(null);
   const [busyPalette, setBusyPalette] = useState<ProfilePaletteId | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const publishable = summary.customEnabled || !hasOtherCustomization(summary);
+  // The theme is published either way; this only describes the owner's own HTML and CSS,
+  // which stay hidden until Custom Profile is switched on in Customize.
+  const hiddenCustomization = !summary.customEnabled && hasOtherCustomization(summary);
 
   const apply = async (next: ProfileTheme, kind: Exclude<Busy, null>) => {
     if (busy) return;
@@ -183,16 +185,7 @@ export function ProfileThemePicker({
       // The customization endpoint replaces the fields it receives, so send the whole record
       // back with only the theme marker changed; otherwise saving a theme would wipe the rest.
       const updated = await socialPost<ProfileSummary>("/social/profile/customization", {
-        profileFont: summary.profileFont ?? "",
-        profileFavicon: summary.profileFavicon ?? "",
-        pageBgColor: summary.pageBgColor ?? "",
-        pageBgImage: summary.pageBgImage ?? "",
-        customHtml: summary.customHtml ?? "",
-        customCss: withProfileTheme(summary.customCss, next),
-        canvasHeight: summary.canvasHeight ?? CANVAS_DEFAULT,
-        customEnabled: publishable,
-        hideTopBanner: summary.hideTopBanner ?? false,
-        hideCardTitles: summary.hideCardTitles ?? false,
+        ...themeCustomizationRecord(summary, next, CANVAS_DEFAULT),
       });
       setTheme(next);
       onSaved(updated);
@@ -322,10 +315,10 @@ export function ProfileThemePicker({
         </button>
       </div>
 
-      {!publishable && (
+      {hiddenCustomization && (
         <p className="mt-3 text-[12px] leading-relaxed text-ink-subtle">
           {t(
-            "Custom profile is off, so visitors see the default colours. Turn it on in Customize to publish this theme.",
+            "Your theme is published to visitors either way. Your custom HTML and CSS stay hidden until Custom Profile is on in Customize.",
           )}
         </p>
       )}

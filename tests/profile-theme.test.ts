@@ -9,6 +9,7 @@ import {
   profileThemeBackground,
   profileThemeScope,
   stripProfileTheme,
+  themeCustomizationRecord,
   withProfileTheme,
   type ProfileTheme,
 } from "../src/lib/profile-theme";
@@ -101,7 +102,8 @@ test("automatic follows the viewer and paints nothing", () => {
 test("a palette scopes its own tokens and paints the canvas", () => {
   const scope = profileThemeScope(noir);
   assert.equal(scope.vars["--color-canvas"], "#000000");
-  assert.equal(scope.backgroundColor, "var(--color-canvas)");
+  // The owner's own palette paints the page itself, so it never borrows the viewer's token.
+  assert.equal(scope.backgroundColor, "#000000");
   assert.equal(scope.colorScheme, "dark");
   assert.equal(scope.ui, "");
 });
@@ -161,7 +163,70 @@ test("the owner's custom page background wins over the theme's", () => {
     background: "url(https://example.com/a.png)",
   });
   assert.deepEqual(profileThemeBackground(scope, ""), {
-    backgroundColor: "var(--color-canvas)",
+    // Without the theme the profile keeps its own background; with it, the palette's canvas.
+    backgroundColor: "#000000",
     backgroundImage: scope.backgroundImage,
   });
+});
+
+test("saving a theme leaves Custom Profile exactly as the owner had it", () => {
+  const off = themeCustomizationRecord(
+    { customEnabled: false, customHtml: "<i>hidden</i>", customCss: ".x{color:red}" },
+    noir,
+    600,
+  );
+  assert.equal(off.customEnabled, false, "a theme must never switch Custom Profile on");
+  const on = themeCustomizationRecord({ customEnabled: true }, noir, 600);
+  assert.equal(on.customEnabled, true, "nor switch it off again");
+  const unset = themeCustomizationRecord({}, noir, 600);
+  assert.equal(unset.customEnabled, false);
+});
+
+test("saving a theme echoes the owner's other customization untouched", () => {
+  const record = themeCustomizationRecord(
+    {
+      profileFont: "Inter",
+      profileFavicon: "/fav.png",
+      pageBgColor: "#101010",
+      pageBgImage: "/bg.png",
+      customHtml: "<div class=\"x\"></div>",
+      customCss: ".x { color: red; }",
+      canvasHeight: 900,
+      hideTopBanner: true,
+      hideCardTitles: true,
+      customEnabled: false,
+    },
+    { palette: "forest", glass: true, gradient: false },
+    600,
+  );
+  assert.equal(record.profileFont, "Inter");
+  assert.equal(record.profileFavicon, "/fav.png");
+  assert.equal(record.pageBgColor, "#101010");
+  assert.equal(record.pageBgImage, "/bg.png");
+  assert.equal(record.customHtml, "<div class=\"x\"></div>");
+  assert.equal(record.canvasHeight, 900);
+  assert.equal(record.hideTopBanner, true);
+  assert.equal(record.hideCardTitles, true);
+  // Only the marker is added, and it stays out of the CSS the owner edits.
+  assert.equal(stripProfileTheme(record.customCss), ".x { color: red; }");
+  assert.equal(parseProfileTheme(record.customCss).palette, "forest");
+});
+
+test("a default theme saves without leaving a marker behind", () => {
+  const record = themeCustomizationRecord({ customCss: ".x{}" }, DEFAULT_PROFILE_THEME, 600);
+  assert.equal(record.customCss, ".x{}");
+  const empty = themeCustomizationRecord({}, DEFAULT_PROFILE_THEME, 600);
+  assert.equal(empty.customCss, "");
+  assert.equal(empty.canvasHeight, 600);
+});
+
+test("the owner keeps their theme with Custom Profile off while the canvas stays hidden", () => {
+  const stored = withProfileTheme("<b>html</b>", { palette: "noir", glass: false, gradient: true });
+  const c = resolveCustomization(summary({ isOwner: true, customEnabled: false, customCss: stored }));
+  assert.equal(c.theme.palette, "noir");
+  assert.equal(c.themeScope.backgroundColor, "#000000", "the theme paints its own canvas");
+  assert.equal(c.themeScope.backgroundImage !== "", true, "the gradient still applies");
+  assert.equal(c.hiddenFromVisitors, true, "the owner's own canvas stays behind the switch");
+  assert.equal(c.css, "<b>html</b>", "the owner's css comes back with the marker stripped");
+  assert.ok(!c.css.includes("harbor-profile-theme"), "the marker is never served as css");
 });

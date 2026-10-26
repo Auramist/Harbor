@@ -342,6 +342,45 @@ export function withProfileTheme(css: string | null | undefined, theme: ProfileT
   return body ? `${marker}\n${body}` : marker;
 }
 
+/** The customization fields a theme save has to send back untouched. */
+export type CustomizationSource = {
+  profileFont?: string;
+  profileFavicon?: string;
+  pageBgColor?: string;
+  pageBgImage?: string;
+  customHtml?: string;
+  customCss?: string;
+  canvasHeight?: number;
+  customEnabled?: boolean;
+  hideTopBanner?: boolean;
+  hideCardTitles?: boolean;
+};
+
+/**
+ * The record the customization endpoint expects when only the theme changed: every field is
+ * echoed as it stands and only the custom CSS gains the marker, so saving a theme cannot wipe
+ * the owner's other customization. Custom Profile is copied, never toggled - a theme is
+ * published whether that switch is on or off, so saving one must not turn it on (or off).
+ */
+export function themeCustomizationRecord(
+  summary: CustomizationSource,
+  theme: ProfileTheme,
+  canvasDefault: number,
+): Required<CustomizationSource> {
+  return {
+    profileFont: summary.profileFont ?? "",
+    profileFavicon: summary.profileFavicon ?? "",
+    pageBgColor: summary.pageBgColor ?? "",
+    pageBgImage: summary.pageBgImage ?? "",
+    customHtml: summary.customHtml ?? "",
+    customCss: withProfileTheme(summary.customCss, theme),
+    canvasHeight: summary.canvasHeight ?? canvasDefault,
+    customEnabled: summary.customEnabled ?? false,
+    hideTopBanner: summary.hideTopBanner ?? false,
+    hideCardTitles: summary.hideCardTitles ?? false,
+  };
+}
+
 export type ProfileThemeScope = {
   /** CSS custom properties for the profile root; children inherit them. */
   vars: Record<string, string>;
