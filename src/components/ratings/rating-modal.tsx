@@ -12,8 +12,6 @@ import type { RatingTarget } from "@/lib/ratings/types";
 import { emitListToast } from "@/components/lists/list-toast";
 import { RatingStars } from "./rating-stars";
 
-
-
 function errorText(e: unknown, t: (s: string) => string, action: "save" | "remove"): string {
   const status = (e as { status?: number })?.status;
   const msg = (e as { message?: string })?.message;

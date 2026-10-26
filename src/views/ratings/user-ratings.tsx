@@ -161,7 +161,11 @@ export function UserRatings({
       const at = cursorRef.current;
       if (!at) return;
       try {
-        const page = await fetchUserRatings(handle, { type, cursor: at }, current.controller.signal);
+        const page = await fetchUserRatings(
+          handle,
+          { type, cursor: at },
+          current.controller.signal,
+        );
         if (request.current !== current || current.controller.signal.aborted) return;
         appendItems(page.items);
         setCursor(page.nextCursor);
@@ -205,9 +209,11 @@ export function UserRatings({
         if (cancelled || request.current !== current || current.controller.signal.aborted) return;
         const at = cursorRef.current;
         if (!at) break;
-        const page = await fetchUserRatings(handle, { type, cursor: at }, current.controller.signal).catch(
-          () => null,
-        );
+        const page = await fetchUserRatings(
+          handle,
+          { type, cursor: at },
+          current.controller.signal,
+        ).catch(() => null);
         if (cancelled || request.current !== current || current.controller.signal.aborted) return;
         if (!page) break;
         cursorRef.current = page.nextCursor;
