@@ -1,4 +1,4 @@
-import { lruSet } from "@/lib/cache";
+import { lruGet, lruSet } from "@/lib/cache";
 import type { Meta } from "@/lib/cinemeta";
 import { registerEvictable } from "@/lib/maintenance";
 import { safeFetch } from "@/lib/safe-fetch";
@@ -11,6 +11,7 @@ import {
   onMediaCacheClear,
   mediaCacheGeneration,
 } from "@/lib/media-cache";
+import { sourceFingerprint } from "./source-fingerprint";
 
 const KITSU = "https://kitsu.io/api/edge";
 
@@ -68,23 +69,57 @@ type Resource<T> = {
 };
 type Doc<D, I = unknown> = { data: D; included?: Resource<I>[]; meta?: { count?: number } };
 
-const cache = new Map<string, { v: unknown; t: number; revision: number }>();
+const cache = new Map<string, { v: unknown; t: number; freshUntil: number; loadedAt: number }>();
+// Source identity outlives the LRU: evicting a value is a memory decision, not
+// a metadata change. Keeping the digest/revision here prevents a detail page
+// from rebuilding just because another title pushed its provider entry out.
+const sourceIdentities = new Map<
+  string,
+  { revision: number; digest: string; freshUntil: number }
+>();
 let revision = 0;
 const TTL = 30 * 60 * 1000;
 const CACHE_MAX = 300;
+const SOURCE_IDENTITY_MAX = 4000;
 const requests = createRequestScheduler({ concurrency: 4 });
-onMediaCacheClear(() => cache.clear());
+onMediaCacheClear(() => {
+  cache.clear();
+  sourceIdentities.clear();
+});
 
 registerEvictable("kitsu", (aggressive) => {
-  if (aggressive) return cache.clear();
+  if (aggressive) {
+    cache.clear();
+    sourceIdentities.clear();
+    return;
+  }
   const now = Date.now();
-  for (const [k, e] of cache) if (now - e.t > TTL) cache.delete(k);
+  for (const [k, e] of cache) if (now > e.freshUntil) cache.delete(k);
 });
+
+function rememberSource(url: string, value: unknown, freshUntil: number): void {
+  const digest = sourceFingerprint(value);
+  const previous = sourceIdentities.get(url);
+  const sourceRevision = previous?.digest === digest ? previous.revision : ++revision;
+  lruSet(
+    sourceIdentities,
+    url,
+    { revision: sourceRevision, digest, freshUntil },
+    SOURCE_IDENTITY_MAX,
+  );
+}
 
 async function get<T>(path: string, maxAge?: number): Promise<T | null> {
   const url = `${KITSU}${path}`;
-  const hit = cache.get(url);
-  if (hit && Date.now() - hit.t < Math.min(TTL, maxAge ?? Infinity)) return hit.v as T;
+  const now = Date.now();
+  const hit = lruGet(cache, url);
+  if (
+    hit &&
+    hit.freshUntil > now &&
+    now - hit.loadedAt < TTL &&
+    (maxAge === undefined || now - hit.t < Math.min(TTL, maxAge))
+  )
+    return hit.v as T;
   const generation = mediaCacheGeneration();
   return loadMedia<T>(
     "kitsu-resource",
@@ -105,8 +140,12 @@ async function get<T>(path: string, maxAge?: number): Promise<T | null> {
       }),
     { ttl: metadataCacheTtl, maxAge },
   ).then(({ value, storedAt }) => {
-    if (value && generation === mediaCacheGeneration())
-      lruSet(cache, url, { v: value, t: storedAt ?? Date.now(), revision: ++revision }, CACHE_MAX);
+    if (value && generation === mediaCacheGeneration()) {
+      const t = storedAt ?? Date.now();
+      const freshUntil = t + metadataCacheTtl(value, t);
+      rememberSource(url, value, freshUntil);
+      lruSet(cache, url, { v: value, t, freshUntil, loadedAt: Date.now() }, CACHE_MAX);
+    }
     return value;
   });
 }
@@ -612,18 +651,16 @@ function isDetailEpisodeSource(url: string, id: number): boolean {
 
 export function kitsuEpisodeSourceVersion(id: number): number {
   let version = 0;
-  for (const [url, entry] of cache) {
-    if (isDetailEpisodeSource(url, id))
-      version = Math.max(version, entry.revision);
+  for (const [url, entry] of sourceIdentities) {
+    if (isDetailEpisodeSource(url, id)) version = Math.max(version, entry.revision);
   }
   return version;
 }
 
-export function kitsuEpisodeSourceStoredAt(id: number): number | undefined {
+export function kitsuEpisodeSourceFreshUntil(id: number): number | undefined {
   let oldest = Infinity;
-  for (const [url, entry] of cache) {
-    if (isDetailEpisodeSource(url, id))
-      oldest = Math.min(oldest, entry.t);
+  for (const [url, entry] of sourceIdentities) {
+    if (isDetailEpisodeSource(url, id)) oldest = Math.min(oldest, entry.freshUntil);
   }
   return Number.isFinite(oldest) ? oldest : undefined;
 }

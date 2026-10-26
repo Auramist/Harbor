@@ -12,7 +12,10 @@ function load(path, dependencies, globals = {}) {
   const code = ts.transpileModule(readFileSync(new URL(`../${path}`, import.meta.url), "utf8"), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
-  dependencies = { "@/lib/media-cache": { onMediaCacheClear() {}, mediaCacheGeneration: () => 0 }, ...dependencies };
+  dependencies = {
+    "@/lib/media-cache": { onMediaCacheClear() {}, mediaCacheGeneration: () => 0 },
+    ...dependencies,
+  };
   const module = { exports: {} };
   vm.runInNewContext(code, {
     module,
@@ -60,6 +63,7 @@ function kitsuFixture(fetch) {
         "@/lib/safe-fetch": { safeFetch: fetch },
         "@/lib/addons-store/adult-filter": { adultContentHidden: () => false },
         "@/lib/episode-text-language": language,
+        "./source-fingerprint": { sourceFingerprint: (value) => JSON.stringify(value) },
       },
       { Date: { now: () => now } },
     ),
@@ -352,7 +356,16 @@ function imageFixture(disk, invoke, now, failStorage = false) {
       },
       "@/lib/manga/sources/suwayomi/auth-registry": { suwayomiAuthFor: () => null },
       "@/lib/settings": { useSettings: () => ({ settings: { posterQuality: "high" } }) },
-      "./object-url-cache": load("src/lib/object-url-cache.ts", {}, { Blob, URL: { createObjectURL: () => "blob:cached-image", revokeObjectURL() {} }, setTimeout, Date: { now } }),
+      "./object-url-cache": load(
+        "src/lib/object-url-cache.ts",
+        {},
+        {
+          Blob,
+          URL: { createObjectURL: () => "blob:cached-image", revokeObjectURL() {} },
+          setTimeout,
+          Date: { now },
+        },
+      ),
       "@/lib/idb-cache": {
         idbCacheGet: async (key) => {
           if (failStorage) throw new Error("disabled storage");

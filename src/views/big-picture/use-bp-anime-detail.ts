@@ -6,7 +6,7 @@ import { useAnilistWatched } from "@/lib/anilist/use-anilist-watched";
 import type { EpisodeProgress } from "@/lib/episode-progress";
 import { useMalWatched } from "@/lib/mal/use-mal-watched";
 import { manualWatchedVersion, subscribeManualWatched } from "@/lib/manual-watched";
-import { animeDetails } from "@/lib/providers/anime-detail";
+import { animeDetails, animeDetailsNeedRefresh } from "@/lib/providers/anime-detail";
 import { mergeAnimeDetailExtras } from "@/lib/providers/anime-detail-extras";
 import { parseKitsuId, type KitsuEpisode, type KitsuStreamer } from "@/lib/providers/kitsu";
 import type { TmdbDetail } from "@/lib/providers/tmdb";
@@ -167,7 +167,8 @@ export function useBpAnimeDetail(meta: Meta | null, opts?: BpAnimeDetailOptions)
         });
     };
     const onWake = () => {
-      if (document.visibilityState === "visible") load();
+      if (document.visibilityState === "visible" && animeDetailsNeedRefresh(settingsRef.current, seed))
+        load();
     };
     load();
     window.addEventListener("focus", onWake);

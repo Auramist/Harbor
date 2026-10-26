@@ -84,6 +84,8 @@ type PendingChange = {
   kind: "progress" | "watched";
   row: NuvioWatchProgress | NuvioWatchedItem;
   deleted: boolean;
+  /** When a delete was queued. Older remote rows may be removed; newer ones win. */
+  deletedAt?: number;
   except?: string[];
 };
 type PendingChanges = Record<string, PendingChange>;
@@ -108,6 +110,8 @@ function readPending(slot: number, accountId: string): PendingChanges {
           typeof change.token !== "string" ||
           (change.kind !== "progress" && change.kind !== "watched") ||
           typeof change.deleted !== "boolean" ||
+          (change.deletedAt != null &&
+            (!Number.isFinite(change.deletedAt) || change.deletedAt < 0)) ||
           !validRow(change.row, slot, accountId) ||
           key !== `${change.kind}:${coordinate(change.row)}` ||
           (change.except != null &&
@@ -142,6 +146,7 @@ function recordPending(
 ): PendingChanges {
   const changes = readPending(slot, accountId);
   const token = crypto.randomUUID();
+  const deletedAt = deleted ? Date.now() : undefined;
   for (const row of rows) {
     // A title-wide deletion supersedes older per-episode actions for that title.
     if (deleted && row.season == null && row.episode == null) {
@@ -163,7 +168,13 @@ function recordPending(
         }
       }
     }
-    changes[`${kind}:${coordinate(row)}`] = { token, kind, row, deleted };
+    changes[`${kind}:${coordinate(row)}`] = {
+      token,
+      kind,
+      row,
+      deleted,
+      ...(deletedAt != null ? { deletedAt } : {}),
+    };
   }
   persistCritical(pendingKey(slot, accountId), JSON.stringify(changes));
   window.dispatchEvent(new CustomEvent("harbor:nuvio-mutations-pending"));
@@ -208,12 +219,28 @@ function applyPending<T extends NuvioCoordinate>(
         : exactHit
           ? [exactHit]
           : [];
-    const blocked = candidates.filter((row) => matchesChange(row, change));
+    let blocked = candidates.filter((row) => matchesChange(row, change));
+    const rowTime = (row: NuvioCoordinate) => pendingRowTime(kind, row);
+    if (change.deleted) {
+      // A delete must not erase a row another device wrote after it was queued.
+      // Keep those coordinates as exceptions so the eventual replay removes
+      // only the rows that existed when the user asked to delete.
+      const deletedAt = change.deletedAt ?? -1;
+      const newer = blocked.filter((row) => rowTime(row) > deletedAt);
+      if (newer.length) {
+        const except = new Set(change.except ?? []);
+        const previousSize = except.size;
+        for (const row of newer) except.add(coordinate(row));
+        if (except.size !== previousSize) {
+          change.except = [...except];
+          // Invalidate any request already holding the previous exception set.
+          change.token = crypto.randomUUID();
+          changed = true;
+        }
+        blocked = blocked.filter((row) => rowTime(row) <= deletedAt);
+      }
+    }
     const hit = blocked[0];
-    const rowTime = (row: NuvioCoordinate) =>
-      kind === "progress"
-        ? progressTime(row as NuvioWatchProgress)
-        : watchedTime(row as NuvioWatchedItem);
     const confirmed = change.deleted
       ? complete && !hit
       : hit &&
@@ -350,46 +377,35 @@ async function sendPendingChange(
     });
     return success || tableSuccess;
   }
-  let targets: NuvioCoordinate[] = [row];
-  let serverProgress: NuvioWatchProgress[] = [];
-  const titleWide = row.season == null && row.episode == null;
-  if (titleWide && change.except?.length) {
-    const rows = await readTableSnapshot<NuvioWatchProgress>(
-      table,
-      slot,
-      accountId,
-      current,
-      false,
-    );
-    if (!rows || !current()) return false;
-    targets = rows.filter((value) => matchesChange(value, change));
-    serverProgress = rows;
-    if (!targets.length) return true;
-  } else if (titleWide && change.kind === "progress") {
-    // Harvest legacy progress keys as well as the canonical coordinate aliases.
-    if (!current()) return false;
-    try {
-      const res = await nuvioFetch(
-        `/rest/v1/watch_progress?profile_id=eq.${slot}&content_id=eq.${encodeURIComponent(row.content_id)}&select=content_id,progress_key,season,episode`,
-        {},
-        current,
-      );
-      if (!current()) return false;
-      const rows: unknown = res.ok ? await res.json() : null;
-      if (Array.isArray(rows)) serverProgress = rows;
-    } catch {
-      /* The title-wide table delete still covers unknown keys. */
-    }
+  const serverRows = await readContentRows<NuvioCoordinate>(
+    table,
+    slot,
+    accountId,
+    row.content_id,
+    row.season,
+    row.episode,
+    current,
+  );
+  if (!serverRows || !current()) return false;
+  const matching = serverRows.filter((value) => matchesChange(value, change));
+  const deletedAt = change.deletedAt ?? -1;
+  if (matching.some((value) => pendingRowTime(change.kind, value) > deletedAt)) {
+    // A row written after this delete was queued must win. The next pull records
+    // it as an exception instead of letting the replay erase it.
+    return true;
   }
+  if (!matching.length) return true;
+  const targets = matching;
   const keys = new Set<string>();
   for (const target of targets) {
     if (target.season != null && target.episode != null) {
       keys.add(`${target.content_id}_s${target.season}e${target.episode}`);
       keys.add(`${target.content_id}:${target.season}:${target.episode}`);
     } else keys.add(target.content_id);
-  }
-  for (const value of serverProgress) {
-    if (matchesChange(value, change) && value.progress_key) keys.add(value.progress_key);
+    if (change.kind === "progress") {
+      const progressKey = (target as NuvioWatchProgress).progress_key;
+      if (progressKey) keys.add(progressKey);
+    }
   }
   const success = await rpc(`sync_delete_${table}`, {
     p_keys:
@@ -531,6 +547,12 @@ function progressTime(row: NuvioWatchProgress): number {
   return Number.isFinite(updated) && updated > 0 ? updated : 0;
 }
 
+function pendingRowTime(kind: PendingChange["kind"], row: NuvioCoordinate): number {
+  return kind === "progress"
+    ? progressTime(row as NuvioWatchProgress)
+    : watchedTime(row as NuvioWatchedItem);
+}
+
 function validRow(value: unknown, slot: number, accountId: string): value is NuvioCoordinate {
   if (!value || typeof value !== "object") return false;
   const row = value as Record<string, unknown>;
@@ -600,6 +622,58 @@ async function readTableSnapshot<T extends NuvioCoordinate>(
   return null;
 }
 
+async function readContentRows<T extends NuvioCoordinate>(
+  table: "watched_items" | "watch_progress",
+  slot: number,
+  accountId: string,
+  contentId: string,
+  season: number | null | undefined,
+  episode: number | null | undefined,
+  stillCurrent: () => boolean,
+): Promise<T[] | null> {
+  const items: T[] = [];
+  const seen = new Set<string>();
+  let total: number | undefined;
+  for (let page = 0; page < 20; page++) {
+    if (!stillCurrent()) return null;
+    const offset = items.length;
+    let url = `/rest/v1/${table}?profile_id=eq.${slot}&content_id=eq.${encodeURIComponent(contentId)}&select=*&order=content_id.asc,season.asc.nullsfirst,episode.asc.nullsfirst&limit=1000&offset=${offset}`;
+    if (season != null) url += `&season=eq.${season}`;
+    if (episode != null) url += `&episode=eq.${episode}`;
+    const res = await nuvioFetch(url, { headers: { Prefer: "count=exact" } }, stillCurrent);
+    if (!res.ok || !stillCurrent()) return null;
+    const rows: unknown = await res.json();
+    if (!stillCurrent() || !Array.isArray(rows) || rows.length > 1000) return null;
+    const range = res.headers?.get("content-range");
+    if (range) {
+      const match = /^(?:(\d+)-(\d+)|\*)\/(\d+|\*)$/.exec(range);
+      if (!match) return null;
+      if (
+        rows.length > 0 &&
+        (Number(match[1]) !== offset || Number(match[2]) + 1 !== offset + rows.length)
+      )
+        return null;
+      if (match[3] !== "*") {
+        const count = Number(match[3]);
+        if ((total != null && count !== total) || count < offset + rows.length) return null;
+        total = count;
+      }
+    }
+    for (const row of rows) {
+      if (!validRow(row, slot, accountId)) return null;
+      const key =
+        table === "watch_progress"
+          ? `${coordinate(row)}|${(row as NuvioWatchProgress).progress_key ?? ""}`
+          : coordinate(row);
+      if (seen.has(key)) return null;
+      seen.add(key);
+      items.push(row as T);
+    }
+    if (rows.length === 0) return total != null && items.length < total ? null : items;
+    if (total != null ? items.length === total : rows.length < 1000) return items;
+  }
+  return null;
+}
 
 function getWatchProgressKey(slot: number, accountId?: string): string {
   const acc = accountId || getNuvioAccountId() || "anon";

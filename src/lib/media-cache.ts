@@ -475,7 +475,7 @@ export function episodeCacheTtl(
   return ttl;
 }
 
-export function metadataCacheTtl(value: unknown): number {
+export function metadataCacheTtl(value: unknown, now = Date.now()): number {
   if (!value || typeof value !== "object") return MEDIA_TTL.episodes;
   const raw = value as Record<string, unknown>;
   const data = raw.data && !Array.isArray(raw.data) ? (raw.data as Record<string, unknown>) : raw;
@@ -492,7 +492,7 @@ export function metadataCacheTtl(value: unknown): number {
       : "air_date" in raw
         ? [raw]
         : [];
-  const episodeTtl = episodeCacheTtl(rows);
+  const episodeTtl = episodeCacheTtl(rows, now);
   return episodeTtl < MEDIA_TTL.episodes
     ? episodeTtl
     : settled

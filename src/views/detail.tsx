@@ -13,6 +13,7 @@ import { Play } from "@/components/icons/play-filled";
 import { animePlayEpisode } from "./detail/anime-play-episode";
 import {
   animeDetails,
+  animeDetailsNeedRefresh,
   type AnimeDetailExtras,
   type FranchiseEntry,
 } from "@/lib/providers/anime-detail";
@@ -1087,7 +1088,12 @@ export function DetailView({
         });
     };
     const onWake = () => {
-      if (isAnime && document.visibilityState === "visible") load(true);
+      if (!isAnime || document.visibilityState !== "visible") return;
+      const lookup = capstanCanonicalId
+        ? { ...meta, id: capstanCanonicalId, type: capstanMeta?.kind ?? meta.type }
+        : meta;
+      const seed = detectedKitsu != null ? { ...meta, id: `kitsu:${detectedKitsu}` } : lookup;
+      if (animeDetailsNeedRefresh(settingsRef.current, seed)) load(true);
     };
     load();
     window.addEventListener("focus", onWake);

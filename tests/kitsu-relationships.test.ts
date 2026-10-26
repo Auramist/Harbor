@@ -121,9 +121,13 @@ test("kitsuMainTvSeries only follows parent_story or full_story, ignoring spinof
   let mockPayload: unknown = null;
 
   const mocks: Record<string, unknown> = {
-    "@/lib/cache": { lruSet: () => ({ has: () => false, add: () => {} }) },
+    "@/lib/cache": {
+      lruGet: () => undefined,
+      lruSet: () => ({ has: () => false, add: () => {} }),
+    },
     "@/lib/cinemeta": {},
     "@/lib/maintenance": { registerEvictable: () => {} },
+    "./source-fingerprint": { sourceFingerprint: (value: unknown) => JSON.stringify(value) },
     "@/lib/media-cache": {
       onMediaCacheClear() {},
       mediaCacheGeneration: () => 0,

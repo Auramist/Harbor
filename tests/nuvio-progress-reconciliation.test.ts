@@ -503,7 +503,7 @@ test("resume and sync normalize invalid legacy slots consistently", async () => 
 
 test("failed episode deletion cannot reappear through old history or local CW hydration", async () => {
   await customSnapshot("pending-episode-delete", async (accountId) => {
-    const old = progress("deleted-episode", 4, NOW);
+    const old = progress("deleted-episode", 4, Date.now() - 10_000);
     writeCachedWatchProgress(1, [old], accountId);
     saveLocalCw(
       {
@@ -808,6 +808,119 @@ test("title deletion replay excludes a newer episode re-add", async () => {
       [2],
     );
     assert.equal([...server.progress.values()][0].position, 600000);
+  });
+});
+
+test("offline watched unmark never erases a newer remote mark", async () => {
+  await customSnapshot("newer-watched-unmark", async (accountId) => {
+    const server = recoveringServer();
+    globalThis.fetch = server.fetch as typeof fetch;
+    assert.equal(await deleteWatchedItemFromNuvio(1, [{ contentId: "newer-watch" }]), false);
+    const remote = {
+      content_id: "newer-watch",
+      profile_id: 1,
+      season: null,
+      episode: null,
+      watched_at: Date.now() + 60_000,
+    };
+    server.watched.set(server.coord(remote), remote);
+    server.online();
+    assert.equal(await flushPendingNuvioMutations(), true);
+    assert.equal(server.watched.size, 1);
+    assert.equal([...server.watched.values()][0].watched_at, remote.watched_at);
+    assert.deepEqual(
+      JSON.parse(storage.get(`harbor.nuvio.pending-sync.v1.${accountId}.slot.1`)!),
+      {},
+    );
+  });
+});
+
+test("offline episode deletion never erases a newer remote checkpoint", async () => {
+  await customSnapshot("newer-episode-delete", async (accountId) => {
+    const server = recoveringServer();
+    globalThis.fetch = server.fetch as typeof fetch;
+    assert.equal(await deleteEpisodeWatchProgressFromNuvio(1, "newer-episode", 1, 1), false);
+    const remote = {
+      ...progress("newer-episode", 1, Date.now() + 60_000),
+      progress_seconds: 900,
+      position: 900000,
+      duration: 1200000,
+    };
+    server.progress.set(server.coord(remote), remote);
+    server.online();
+    assert.equal(await flushPendingNuvioMutations(), true);
+    assert.equal(server.progress.size, 1);
+    assert.equal([...server.progress.values()][0].progress_seconds, 900);
+    assert.deepEqual(
+      JSON.parse(storage.get(`harbor.nuvio.pending-sync.v1.${accountId}.slot.1`)!),
+      {},
+    );
+  });
+});
+
+test("title deletion replay preserves a newer remote episode and removes older ones", async () => {
+  await customSnapshot("newer-title-delete", async (accountId) => {
+    const server = recoveringServer();
+    globalThis.fetch = server.fetch as typeof fetch;
+    const older = {
+      ...progress("mixed-show", 1, Date.now() - 60_000),
+      position: 120000,
+      duration: 1200000,
+    };
+    server.progress.set(server.coord(older), older);
+    await deleteWatchProgressFromNuvio(1, "mixed-show");
+    const newer = {
+      ...progress("mixed-show", 2, Date.now() + 60_000),
+      progress_seconds: 900,
+      position: 900000,
+      duration: 1200000,
+    };
+    server.progress.set(server.coord(newer), newer);
+    server.online();
+    assert.equal(await flushPendingNuvioMutations(), true);
+    assert.deepEqual(
+      [...server.progress.values()].map((row) => row.episode),
+      [2],
+    );
+    assert.equal([...server.progress.values()][0].progress_seconds, 900);
+    assert.deepEqual(
+      JSON.parse(storage.get(`harbor.nuvio.pending-sync.v1.${accountId}.slot.1`)!),
+      {},
+    );
+  });
+});
+
+test("a legacy pending delete without a timestamp never deletes remote state", async () => {
+  await customSnapshot("legacy-delete", async (accountId) => {
+    const server = recoveringServer();
+    server.online();
+    globalThis.fetch = server.fetch as typeof fetch;
+    const old = {
+      ...progress("legacy-delete", 1, Date.now() - 60_000),
+      position: 120000,
+      duration: 1200000,
+    };
+    server.progress.set(server.coord(old), old);
+    const key = `harbor.nuvio.pending-sync.v1.${accountId}.slot.1`;
+    storage.set(
+      key,
+      JSON.stringify({
+        ['progress:["legacy-delete",null,null]']: {
+          token: "legacy-token",
+          kind: "progress",
+          row: {
+            content_id: "legacy-delete",
+            profile_id: 1,
+            season: null,
+            episode: null,
+          },
+          deleted: true,
+        },
+      }),
+    );
+    assert.equal(await flushPendingNuvioMutations(), true);
+    assert.equal(server.progress.size, 1);
+    assert.deepEqual(JSON.parse(storage.get(key)!), {});
   });
 });
 

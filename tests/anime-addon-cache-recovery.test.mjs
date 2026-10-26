@@ -11,24 +11,58 @@ function fixture() {
   let calls = 0;
   const media = memoryMediaCache({ now: () => now });
   const dependencies = {
-    "@/lib/cache": { lruSet: (map, key, value) => map.set(key, value) },
+    "@/lib/cache": {
+      lruGet: (map, key) => map.get(key),
+      lruSet: (map, key, value) => map.set(key, value),
+    },
     "@/lib/memory-profiler": { registerCache() {} },
     "@/lib/media-cache": media,
-    "@/lib/safe-fetch": { async safeFetch() {
-      calls++;
-      if (outcome === "offline") throw new Error("temporary outage");
-      const ok = outcome === "ok";
-      return { ok, status: ok ? 200 : 404, json: async () => ({ meta: {
-        id: "kitsu:13", name: "Example", videos: [{ id: "kitsu:13:1", title: "Real title" }],
-      } }) };
-    } },
+    "./source-fingerprint": { sourceFingerprint: (value) => JSON.stringify(value) },
+    "@/lib/safe-fetch": {
+      async safeFetch() {
+        calls++;
+        if (outcome === "offline") throw new Error("temporary outage");
+        const ok = outcome === "ok";
+        return {
+          ok,
+          status: ok ? 200 : 404,
+          json: async () => ({
+            meta: {
+              id: "kitsu:13",
+              name: "Example",
+              videos: [{ id: "kitsu:13:1", title: "Real title" }],
+            },
+          }),
+        };
+      },
+    },
   };
   const module = { exports: {} };
-  vm.runInNewContext(ts.transpileModule(readFileSync(new URL("../src/lib/providers/anime-kitsu-addon.ts", import.meta.url), "utf8"), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  }).outputText, { module, exports: module.exports, require: (name) => dependencies[name], Date: { now: () => now } });
-  return { load: () => module.exports.animeKitsuMeta("kitsu:13"), media,
-    advance: (ms) => { now += ms; }, outcome: (value) => { outcome = value; }, calls: () => calls };
+  vm.runInNewContext(
+    ts.transpileModule(
+      readFileSync(new URL("../src/lib/providers/anime-kitsu-addon.ts", import.meta.url), "utf8"),
+      {
+        compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+      },
+    ).outputText,
+    {
+      module,
+      exports: module.exports,
+      require: (name) => dependencies[name],
+      Date: { now: () => now },
+    },
+  );
+  return {
+    load: () => module.exports.animeKitsuMeta("kitsu:13"),
+    media,
+    advance: (ms) => {
+      now += ms;
+    },
+    outcome: (value) => {
+      outcome = value;
+    },
+    calls: () => calls,
+  };
 }
 
 test("every caller retains the last complete addon metadata through an outage and can retry", async () => {

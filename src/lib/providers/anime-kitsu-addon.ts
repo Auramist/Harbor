@@ -1,19 +1,50 @@
-import { lruSet } from "@/lib/cache";
+import { lruGet, lruSet } from "@/lib/cache";
 import { registerCache } from "@/lib/memory-profiler";
 import { safeFetch } from "@/lib/safe-fetch";
-import { loadMedia, episodeCacheTtl, onMediaCacheClear, mediaCacheGeneration } from "@/lib/media-cache";
+import {
+  loadMedia,
+  episodeCacheTtl,
+  onMediaCacheClear,
+  mediaCacheGeneration,
+} from "@/lib/media-cache";
+import { sourceFingerprint } from "./source-fingerprint";
 
 const HOST = "https://anime-kitsu.strem.fun";
 const TTL = 6 * 60 * 60 * 1000;
 const NEG_TTL = 30 * 60 * 1000;
 const CACHE_MAX = 300;
 
-const cache = new Map<string, { v: AnimeKitsuMeta | null; t: number; revision: number }>();
+const cache = new Map<
+  string,
+  { v: AnimeKitsuMeta | null; t: number; freshUntil: number; loadedAt: number }
+>();
+// See kitsu.ts: source identity must outlive the LRU that holds the payload.
+const sourceIdentities = new Map<
+  string,
+  { revision: number; digest: string; freshUntil: number }
+>();
 let revision = 0;
+const SOURCE_IDENTITY_MAX = 2000;
 const inflight = new Map<string, Promise<AnimeKitsuMeta | null>>();
 
 registerCache("anime-kitsu:meta", () => cache.size);
-onMediaCacheClear(() => { cache.clear(); inflight.clear(); });
+onMediaCacheClear(() => {
+  cache.clear();
+  sourceIdentities.clear();
+  inflight.clear();
+});
+
+function rememberSource(key: string, value: AnimeKitsuMeta | null, freshUntil: number): void {
+  const digest = sourceFingerprint(value);
+  const previous = sourceIdentities.get(key);
+  const sourceRevision = previous?.digest === digest ? previous.revision : ++revision;
+  lruSet(
+    sourceIdentities,
+    key,
+    { revision: sourceRevision, digest, freshUntil },
+    SOURCE_IDENTITY_MAX,
+  );
+}
 
 export type AnimeKitsuVideo = {
   id: string;
@@ -79,17 +110,17 @@ export async function animeKitsuMeta(
     return null;
   }
   const key = metaId;
-  const hit = cache.get(key);
+  const now = Date.now();
+  const hit = lruGet(cache, key);
   // A miss is remembered too, on a shorter clock. This is the anime page's
   // steady-state hydration path: award and rail metas ship with no art on
   // purpose, so a title this addon does not carry was re-asked twice per tile
   // mount, for the life of the session, with nothing ever written down.
   if (
     hit &&
-    Date.now() - hit.t <
-      (hit.v
-        ? Math.min(TTL, episodeCacheTtl(hit.v.videos), maxAge ?? Infinity)
-        : Math.min(NEG_TTL, maxAge ?? Infinity))
+    hit.freshUntil > now &&
+    now - hit.loadedAt < TTL &&
+    (maxAge === undefined || now - hit.t < maxAge)
   )
     return hit.v;
   const existing = inflight.get(key);
@@ -140,15 +171,17 @@ export async function animeKitsuMeta(
   )
     .then(({ value, storedAt }) => {
       if (generation === mediaCacheGeneration()) {
-        if (value)
-          lruSet(
-            cache,
-            key,
-            { v: value, t: storedAt ?? Date.now(), revision: ++revision },
-            CACHE_MAX,
-          );
-        else if (definitiveAbsence)
-          lruSet(cache, key, { v: null, t: Date.now(), revision: ++revision }, CACHE_MAX);
+        if (value) {
+          const t = storedAt ?? Date.now();
+          const freshUntil = t + Math.min(TTL, episodeCacheTtl(value.videos, t));
+          rememberSource(key, value, freshUntil);
+          lruSet(cache, key, { v: value, t, freshUntil, loadedAt: Date.now() }, CACHE_MAX);
+        } else if (definitiveAbsence) {
+          const t = Date.now();
+          const freshUntil = t + NEG_TTL;
+          rememberSource(key, null, freshUntil);
+          lruSet(cache, key, { v: null, t, freshUntil, loadedAt: Date.now() }, CACHE_MAX);
+        }
       }
       return value;
     })
@@ -160,9 +193,9 @@ export async function animeKitsuMeta(
 }
 
 export function animeKitsuMetaVersion(metaId: string): number | undefined {
-  return cache.get(metaId)?.revision;
+  return sourceIdentities.get(metaId)?.revision;
 }
 
-export function animeKitsuMetaStoredAt(metaId: string): number | undefined {
-  return cache.get(metaId)?.t;
+export function animeKitsuMetaFreshUntil(metaId: string): number | undefined {
+  return sourceIdentities.get(metaId)?.freshUntil;
 }

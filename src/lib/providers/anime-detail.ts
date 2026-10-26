@@ -11,7 +11,7 @@ import {
 import {
   animeKitsuMeta,
   animeKitsuMetaVersion,
-  animeKitsuMetaStoredAt,
+  animeKitsuMetaFreshUntil,
   type AnimeKitsuMeta,
 } from "@/lib/providers/anime-kitsu-addon";
 import { resolveAnimeEntry } from "@/lib/providers/anime-entry";
@@ -36,7 +36,7 @@ import { tvdbEpisodesByType, tvdbEpisodesAbsolute, tvdbLangFromIso1 } from "@/li
 import {
   kitsuAnime,
   kitsuEpisodeSourceVersion,
-  kitsuEpisodeSourceStoredAt,
+  kitsuEpisodeSourceFreshUntil,
   kitsuCharacters,
   kitsuEpisodes,
   kitsuMainTvSeries,
@@ -372,16 +372,17 @@ function buildSimilarRails(
 
 type EpisodeSubscriber = (episodes: KitsuEpisode[], kitsuId: number) => void;
 const DETAIL_MAX_AGE = 5 * 60_000;
+const DETAIL_RETRIES = 2;
 const loadedSourceVersions = new WeakMap<AnimeDetailResult, string>();
 const detailCache = new Map<
   string,
   { expires: number; sourceVersion: string; value: AnimeDetailResult }
 >();
-function sourceTimes(metaId: string, kitsuId: number): number[] {
+function sourceFreshness(metaId: string, kitsuId: number): number[] {
   return [
-    animeKitsuMetaStoredAt?.(metaId),
-    animeKitsuMetaStoredAt?.(`kitsu:${kitsuId}`),
-    kitsuEpisodeSourceStoredAt?.(kitsuId),
+    animeKitsuMetaFreshUntil?.(metaId),
+    animeKitsuMetaFreshUntil?.(`kitsu:${kitsuId}`),
+    kitsuEpisodeSourceFreshUntil?.(kitsuId),
   ].filter((time): time is number => typeof time === "number" && Number.isFinite(time) && time > 0);
 }
 function sourceVersion(metaId: string, kitsuId: number): string {
@@ -391,13 +392,16 @@ function sourceVersion(metaId: string, kitsuId: number): string {
     kitsuEpisodeSourceVersion?.(kitsuId),
   ]);
 }
-function detailExpiry(metaId: string, kitsuId: number, ttl: number): number {
+function sourceExpiry(metaId: string, kitsuId: number): number | undefined {
+  const freshness = sourceFreshness(metaId, kitsuId);
+  return freshness.length === 0 ? undefined : Math.min(...freshness);
+}
+function detailExpiry(metaId: string, kitsuId: number): number {
   const now = Date.now();
-  const sourceExpiry = Math.min(
-    ...sourceTimes(metaId, kitsuId).map((time) => time + DETAIL_MAX_AGE),
-  );
+  const expiry = sourceExpiry(metaId, kitsuId);
+  if (expiry === undefined) return now + DETAIL_MAX_AGE;
   // An outage may return usable stale sources; do not grant them a new full TTL.
-  return sourceExpiry <= now ? now + 30_000 : Math.min(now + ttl, sourceExpiry);
+  return expiry <= now ? now + 30_000 : expiry;
 }
 
 const detailInflight = new Map<
@@ -409,14 +413,13 @@ const detailInflight = new Map<
   }
 >();
 
-onMediaCacheClear(() => { detailCache.clear(); detailInflight.clear(); });
+onMediaCacheClear(() => {
+  detailCache.clear();
+  detailInflight.clear();
+});
 
-export function animeDetails(
-  settings: Settings,
-  meta: Meta,
-  onEpisodesReady?: EpisodeSubscriber,
-): Promise<AnimeDetailResult | null> {
-  const key = JSON.stringify([
+function detailKey(settings: Settings, meta: Meta): string {
+  return JSON.stringify([
     meta.id,
     meta.imdbRating,
     settings.tmdbLanguage,
@@ -426,86 +429,122 @@ export function animeDetails(
     settings.fanartKey,
     settings.tmdbImageLangs,
   ]);
-  const publish = (listener: EpisodeSubscriber, episodes: KitsuEpisode[], kitsuId: number) => {
-    try {
-      listener(episodes, kitsuId);
-    } catch {
-      /* A view cannot reject a shared provider load. */
-    }
-  };
-  const hit = detailCache.get(key);
-  if (
-    hit &&
-    hit.expires > Date.now() &&
-    hit.sourceVersion === sourceVersion(meta.id, hit.value.kitsuId)
-  ) {
-    if (onEpisodesReady) publish(onEpisodesReady, hit.value.episodes, hit.value.kitsuId);
-    return Promise.resolve(hit.value);
+}
+
+function publish(listener: EpisodeSubscriber, episodes: KitsuEpisode[], kitsuId: number): void {
+  try {
+    listener(episodes, kitsuId);
+  } catch {
+    /* A view cannot reject a shared provider load. */
   }
-  detailCache.delete(key);
+}
+
+function beginDetailLoad(
+  settings: Settings,
+  meta: Meta,
+  key: string,
+  listeners: Set<EpisodeSubscriber>,
+  retry: number,
+): Promise<AnimeDetailResult | null> {
   const shared = detailInflight.get(key);
   if (shared) {
-    if (onEpisodesReady) {
-      shared.listeners.add(onEpisodesReady);
-      if (shared.early) publish(onEpisodesReady, shared.early.episodes, shared.early.kitsuId);
+    for (const listener of listeners) {
+      shared.listeners.add(listener);
+      if (shared.early) publish(listener, shared.early.episodes, shared.early.kitsuId);
     }
     return shared.promise;
   }
   const generation = mediaCacheGeneration();
-  const listeners = new Set<EpisodeSubscriber>(onEpisodesReady ? [onEpisodesReady] : []);
   const pending: NonNullable<ReturnType<typeof detailInflight.get>> = {
     listeners,
-    promise: loadAnimeDetails(settings, meta, (episodes, kitsuId) => {
-      if (generation !== mediaCacheGeneration()) return;
-      pending.early = { episodes, kitsuId };
-      for (const listener of listeners) publish(listener, episodes, kitsuId);
-    })
-      .then((result) => {
-        if (!result || result.episodes.length === 0 || generation !== mediaCacheGeneration())
-          return result;
-        const loadedVersion = loadedSourceVersions.get(result) ?? sourceVersion(meta.id, result.kitsuId);
-        if (loadedVersion !== sourceVersion(meta.id, result.kitsuId)) {
-          if (detailInflight.get(key) === pending) detailInflight.delete(key);
-          return animeDetails(settings, meta, (episodes, kitsuId) => {
-            for (const listener of listeners) publish(listener, episodes, kitsuId);
-          });
-        }
-        const entry = {
-          expires: detailExpiry(meta.id, result.kitsuId, 30_000),
-          sourceVersion: loadedVersion,
-          value: result,
-        };
-        detailCache.set(key, entry);
-        while (detailCache.size > 16) detailCache.delete(detailCache.keys().next().value!);
-        void result.enrichPromise
-          .then((episodes) => {
-            if (
-              detailCache.get(key) !== entry ||
-              entry.sourceVersion !== sourceVersion(meta.id, result.kitsuId)
-            )
-              return;
-            entry.value = { ...result, episodes };
-            // Partial native fallback lists retry sooner; a complete addon list can
-            // keep its finalized metadata across overview remounts.
-            const complete =
-              episodes.length >= result.detail.numberOfEpisodes ||
-              episodes.every((episode) => !!episode.streamId);
-            entry.expires = detailExpiry(
-              meta.id,
-              result.kitsuId,
-              complete ? DETAIL_MAX_AGE : 30_000,
-            );
-          })
-          .catch(() => {});
-        return result;
-      })
-      .finally(() => {
-        if (detailInflight.get(key) === pending) detailInflight.delete(key);
-        listeners.clear();
-      }),
+    promise: Promise.resolve(null),
   };
+  pending.promise = loadAnimeDetails(settings, meta, (episodes, kitsuId) => {
+    if (generation !== mediaCacheGeneration()) return;
+    pending.early = { episodes, kitsuId };
+    for (const listener of pending.listeners) publish(listener, episodes, kitsuId);
+  })
+    .then((result) => {
+      if (!result || result.episodes.length === 0 || generation !== mediaCacheGeneration())
+        return result;
+      const loadedVersion =
+        loadedSourceVersions.get(result) ?? sourceVersion(meta.id, result.kitsuId);
+      if (loadedVersion !== sourceVersion(meta.id, result.kitsuId)) {
+        // A provider updated while this request was in flight. Retry once or
+        // twice so the caller receives the new snapshot, but never recurse
+        // forever when caches are being evicted concurrently.
+        if (detailInflight.get(key) === pending) detailInflight.delete(key);
+        if (retry >= DETAIL_RETRIES) return result;
+        return beginDetailLoad(settings, meta, key, new Set(pending.listeners), retry + 1);
+      }
+      const previous = detailCache.get(key);
+      if (previous && previous.sourceVersion === loadedVersion) {
+        // A provider TTL expired but its content fingerprint did not change.
+        // Keep the mounted snapshot and only extend its reuse deadline.
+        previous.expires = detailExpiry(meta.id, result.kitsuId);
+        return previous.value;
+      }
+      const entry = {
+        expires: detailExpiry(meta.id, result.kitsuId),
+        sourceVersion: loadedVersion,
+        value: result,
+      };
+      detailCache.set(key, entry);
+      while (detailCache.size > 16) detailCache.delete(detailCache.keys().next().value!);
+      void result.enrichPromise
+        .then((episodes) => {
+          if (
+            detailCache.get(key) !== entry ||
+            entry.sourceVersion !== sourceVersion(meta.id, result.kitsuId)
+          )
+            return;
+          entry.value = { ...result, episodes };
+          entry.expires = detailExpiry(meta.id, result.kitsuId);
+        })
+        .catch(() => {});
+      return result;
+    })
+    .finally(() => {
+      if (detailInflight.get(key) === pending) detailInflight.delete(key);
+      listeners.clear();
+    });
   detailInflight.set(key, pending);
   return pending.promise;
+}
+
+export function animeDetailsNeedRefresh(settings: Settings, meta: Meta): boolean {
+  const hit = detailCache.get(detailKey(settings, meta));
+  if (!hit || hit.sourceVersion !== sourceVersion(meta.id, hit.value.kitsuId)) return true;
+  const expiry = sourceExpiry(meta.id, hit.value.kitsuId);
+  return expiry === undefined ? hit.expires <= Date.now() : expiry <= Date.now();
+}
+
+export function animeDetails(
+  settings: Settings,
+  meta: Meta,
+  onEpisodesReady?: EpisodeSubscriber,
+  retry = 0,
+): Promise<AnimeDetailResult | null> {
+  const key = detailKey(settings, meta);
+  const hit = detailCache.get(key);
+  if (hit) {
+    if (onEpisodesReady) publish(onEpisodesReady, hit.value.episodes, hit.value.kitsuId);
+    if (hit.sourceVersion === sourceVersion(meta.id, hit.value.kitsuId)) {
+      const now = Date.now();
+      if (hit.expires > now) return Promise.resolve(hit.value);
+      const expiry = sourceExpiry(meta.id, hit.value.kitsuId);
+      if (expiry !== undefined && expiry > now) {
+        // Another consumer already refreshed the provider sources; extend the
+        // snapshot instead of rebuilding it again for the same content.
+        hit.expires = expiry;
+        return Promise.resolve(hit.value);
+      }
+    } else {
+      detailCache.delete(key);
+    }
+  }
+  const listeners = new Set<EpisodeSubscriber>(onEpisodesReady ? [onEpisodesReady] : []);
+  return beginDetailLoad(settings, meta, key, listeners, retry);
 }
 
 async function loadAnimeDetails(
@@ -517,7 +556,7 @@ async function loadAnimeDetails(
   let directMeta: AnimeKitsuMeta | null = null;
   let originalAddonVersion = animeKitsuMetaVersion?.(meta.id);
   if (kitsuId == null) {
-    const entry = await resolveAnimeEntry(meta.id, DETAIL_MAX_AGE).catch(() => null);
+    const entry = await resolveAnimeEntry(meta.id).catch(() => null);
     if (entry) {
       kitsuId = entry.kitsuId;
       directMeta = entry.meta;
@@ -526,7 +565,7 @@ async function loadAnimeDetails(
   }
   if (kitsuId == null) return null;
 
-  let anime = await kitsuAnime(kitsuId, DETAIL_MAX_AGE);
+  let anime = await kitsuAnime(kitsuId);
   if (
     anime &&
     (anime.episodeCount == null || anime.episodeCount <= 1) &&
@@ -534,7 +573,7 @@ async function loadAnimeDetails(
   ) {
     const mainTv = await kitsuMainTvSeries(kitsuId).catch(() => null);
     if (mainTv != null && mainTv !== kitsuId) {
-      const mainAnime = await kitsuAnime(mainTv, DETAIL_MAX_AGE);
+      const mainAnime = await kitsuAnime(mainTv);
       if (mainAnime) {
         kitsuId = mainTv;
         anime = mainAnime;
@@ -547,7 +586,7 @@ async function loadAnimeDetails(
   const addonMetaPromise = (
     directMeta && parseKitsuId(directMeta.id) === kitsuId && directMeta.videos.length > 0
       ? Promise.resolve(directMeta)
-      : animeKitsuMeta(`kitsu:${kitsuId}`, DETAIL_MAX_AGE).catch(() => null)
+      : animeKitsuMeta(`kitsu:${kitsuId}`).catch(() => null)
   ).then((addon) => {
     if (meta.id === `kitsu:${kitsuId}`) originalAddonVersion = animeKitsuMetaVersion?.(meta.id);
     addonVersion = animeKitsuMetaVersion?.(`kitsu:${kitsuId}`);
@@ -566,7 +605,7 @@ async function loadAnimeDetails(
   const localized = iso1.split("-")[0]?.toLowerCase() !== "en";
 
   // Queue the episode work before optional franchise/character requests.
-  const rawEpisodesPromise = kitsuEpisodes(kitsuId, 100, DETAIL_MAX_AGE).then((rows) => {
+  const rawEpisodesPromise = kitsuEpisodes(kitsuId, 100).then((rows) => {
     kitsuVersion = kitsuEpisodeSourceVersion?.(kitsuId);
     return rows;
   });
@@ -936,6 +975,9 @@ async function loadAnimeDetails(
     heroBgPromise,
     kitsuId,
   };
-  loadedSourceVersions.set(result, JSON.stringify([originalAddonVersion, addonVersion, kitsuVersion]));
+  loadedSourceVersions.set(
+    result,
+    JSON.stringify([originalAddonVersion, addonVersion, kitsuVersion]),
+  );
   return result;
 }
