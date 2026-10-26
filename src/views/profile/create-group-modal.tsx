@@ -1,7 +1,12 @@
 import { Camera, Loader2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { createGroup, setGroupAvatar, type GroupDetail, type GroupVisibility } from "@/lib/social/groups";
+import {
+  createGroup,
+  setGroupAvatar,
+  type GroupDetail,
+  type GroupVisibility,
+} from "@/lib/social/groups";
 import { Avatar } from "./profile-bits";
 import { fileToWebp } from "./group-image-utils";
 import { GroupTagsInput } from "./group-tags-input";

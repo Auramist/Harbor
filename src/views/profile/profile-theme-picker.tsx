@@ -104,7 +104,8 @@ function CustomThemeEditor({
     const next = {} as CustomProfileColors;
     for (const { key, label } of CUSTOM_SLOTS) {
       const value = normalizeHexColor(draft[key]);
-      if (!value) return setError(t("{label} needs a hex colour like #1a2b3c.", { label: t(label) }));
+      if (!value)
+        return setError(t("{label} needs a hex colour like #1a2b3c.", { label: t(label) }));
       next[key] = value;
     }
     setError(null);
@@ -151,7 +152,11 @@ function CustomThemeEditor({
           disabled={!dirty || busy}
           className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-accent px-3.5 text-[12px] font-semibold text-canvas transition-opacity hover:opacity-90 disabled:opacity-40"
         >
-          {busy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} strokeWidth={3} />}
+          {busy ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <Check size={12} strokeWidth={3} />
+          )}
           {t("Apply colours")}
         </button>
       </div>
@@ -249,11 +254,13 @@ export function ProfileThemePicker({
                 id,
                 palette ? palette.name : AUTO_PROFILE_PALETTE.name,
                 palette ? palette.blurb : AUTO_PROFILE_PALETTE.blurb,
-                palette ? paletteSwatch(palette) : {
-                  canvas: "var(--color-canvas)",
-                  surface: "var(--color-surface)",
-                  accent: "var(--color-accent)",
-                },
+                palette
+                  ? paletteSwatch(palette)
+                  : {
+                      canvas: "var(--color-canvas)",
+                      surface: "var(--color-surface)",
+                      accent: "var(--color-accent)",
+                    },
               )}
             </button>
           );
@@ -264,10 +271,7 @@ export function ProfileThemePicker({
           aria-pressed={theme.palette === "custom"}
           disabled={!!busy}
           onClick={() =>
-            void apply(
-              { ...theme, palette: "custom", colors: seedColors(theme) },
-              "palette",
-            )
+            void apply({ ...theme, palette: "custom", colors: seedColors(theme) }, "palette")
           }
           className={tileClass(theme.palette === "custom")}
         >
