@@ -1,3 +1,4 @@
+import { startNuvioMutationRetry } from "@/lib/nuvio/nuvio-sync";
 import { GAMES_IN_NAV } from "@/chrome/nav-items";
 import { GameAccessProvider } from "@/views/games/game-access-context";
 import { GameLibraryDock } from "@/views/games/game-library-dock";
@@ -537,6 +538,7 @@ export function App({ onReady }: { onReady?: () => void }) {
                                                       </AfterFirstPaint>
                                                       <AfterFirstPaint>
                                                         <MediaServerSyncRunner />
+                                                        <NuvioMutationRetryRunner />
                                                         <AutoDownloadRunner />
                                                         <RemindersRunner />
                                                         <GameDownloadNotificationsRunner />
@@ -2266,3 +2268,8 @@ function Shell({ onReady }: { onReady?: () => void }) {
 }
 
 export type { Frame };
+
+function NuvioMutationRetryRunner() {
+  useEffect(() => startNuvioMutationRetry(), []);
+  return null;
+}
