@@ -4,7 +4,6 @@ import type { PublicRating } from "@/lib/ratings/types";
 import { fetchUserRatings } from "@/lib/social/ratings-api";
 
 const TTL = 60000;
-const MAX_PAGES = 3;
 
 const cache = new Map<string, { at: number; list: Promise<PublicRating[]> }>();
 
@@ -18,7 +17,7 @@ export function loadRatings(handle: string): Promise<PublicRating[]> {
   entry.list = (async () => {
     const items: PublicRating[] = [];
     let cursor: string | undefined;
-    for (let page = 0; page < MAX_PAGES; page += 1) {
+    for (;;) {
       const rated = await fetchUserRatings(handle, { cursor });
       items.push(...rated.items);
       cursor = rated.nextCursor;
