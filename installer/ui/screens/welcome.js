@@ -427,9 +427,7 @@ export function render(mount, ctx) {
     OPTIONAL_GROUPS[1].items.forEach((item) => {
       toggles[item.key].size.classList.remove("hb-skeleton");
       toggles[item.key].size.textContent =
-        item.key === "music" && (byKey.music || 0) > 0
-          ? mb(byKey.music)
-          : t("Tab only");
+        item.key === "music" && (byKey.music || 0) > 0 ? mb(byKey.music) : t("Tab only");
     });
     if (!(byKey.music > 0)) {
       toggles.music.note.textContent = t(

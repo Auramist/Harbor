@@ -196,7 +196,9 @@ if (!skipMusic && existsSync(musicModule)) {
     // The component host is not wired into harbor.exe yet. Refuse accidental
     // release of a seemingly installable but non-functional DLL.
     if (process.env.HARBOR_MUSIC_MODULE_EXPERIMENTAL !== "1") {
-      throw new Error("Music runtime loading is not implemented; refusing to ship the staged module");
+      throw new Error(
+        "Music runtime loading is not implemented; refusing to ship the staged module",
+      );
     }
     const manifestPath = join(musicModule, "music-module.json");
     const libraryPath = join(musicModule, "harbor-music-module.exe");

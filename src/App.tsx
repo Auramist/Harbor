@@ -1612,9 +1612,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
   }, [musicEnabled, settings.musicArtworkAppIcon]);
   useEffect(() => {
     if (musicEnabled) {
-      void import("@/lib/music/player").then(({ resetMusicForProfile }) =>
-        resetMusicForProfile(),
-      );
+      void import("@/lib/music/player").then(({ resetMusicForProfile }) => resetMusicForProfile());
     }
   }, [musicEnabled, activeProfileForMusic]);
 
