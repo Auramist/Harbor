@@ -1,5 +1,11 @@
 import { Loader2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { Search } from "@/components/icons/search-icon";
 import { useT } from "@/lib/i18n";
 import { sourceLabel, type RatingSource } from "@/lib/ratings/trigger";
@@ -95,10 +101,7 @@ export function PeoplePanel({
     };
   }, [query]);
 
-  const candidates = useMemo(
-    () => rankPeople(sources, hits, query),
-    [sources, hits, query],
-  );
+  const candidates = useMemo(() => rankPeople(sources, hits, query), [sources, hits, query]);
 
   useEffect(() => {
     const unknown = candidates.filter(
@@ -115,9 +118,7 @@ export function PeoplePanel({
     };
   }, [candidates, hidden]);
 
-  const people = candidates.filter(
-    (person) => hidden[person.handle.toLowerCase()] !== false,
-  );
+  const people = candidates.filter((person) => hidden[person.handle.toLowerCase()] !== false);
   const core = people.filter((person) => person.kind === "owner" || person.kind === "me");
   const friends = people.filter((person) => person.kind === "friend");
   const anyone = people.filter((person) => person.kind === "any");
@@ -130,9 +131,7 @@ export function PeoplePanel({
   }, [query]);
 
   const move = (step: number) =>
-    setIndex((i) =>
-      ordered.length ? (i + step + ordered.length) % ordered.length : 0,
-    );
+    setIndex((i) => (ordered.length ? (i + step + ordered.length) % ordered.length : 0));
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {

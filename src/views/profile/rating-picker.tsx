@@ -86,10 +86,7 @@ export function useRatingSuggest(text: string, caret: number, sources: RatingSou
     [all, selected],
   );
 
-  const token = useMemo(
-    () => (all.length ? ratingToken(text, caret) : null),
-    [text, caret, all],
-  );
+  const token = useMemo(() => (all.length ? ratingToken(text, caret) : null), [text, caret, all]);
   const active = !!token;
   const handle = source?.handle ?? "";
   const [view, setView] = useState<"ratings" | "people">("ratings");
@@ -239,9 +236,7 @@ export function RatingPicker({
         <>
           <PersonBar source={suggest.source} onOpen={suggest.showPeople} />
           {suggest.loading ? (
-            <p className="px-3 py-2.5 text-[12.5px] text-ink-subtle">
-              {t("Loading ratings…")}
-            </p>
+            <p className="px-3 py-2.5 text-[12.5px] text-ink-subtle">{t("Loading ratings…")}</p>
           ) : suggest.options.length === 0 ? (
             <p className="px-3 py-2.5 text-[12.5px] text-ink-subtle">
               {suggest.token?.query.trim()
@@ -249,7 +244,11 @@ export function RatingPicker({
                 : t("No ratings to quote from this person.")}
             </p>
           ) : (
-            <div role="listbox" aria-label={t("Ratings you can quote")} className="max-h-[260px] overflow-y-auto py-1">
+            <div
+              role="listbox"
+              aria-label={t("Ratings you can quote")}
+              className="max-h-[260px] overflow-y-auto py-1"
+            >
               {suggest.options.map((r, i) => (
                 <button
                   key={`${r.itemKey}:${r.score}`}

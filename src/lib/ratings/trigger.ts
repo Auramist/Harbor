@@ -1,4 +1,5 @@
-import type { PublicRating } from "./types";export const RATING_PICKER_LIMIT = 6;
+import type { PublicRating } from "./types";
+export const RATING_PICKER_LIMIT = 6;
 
 // A "#" the author types at the caret starts the rating trigger. A leading word character keeps
 // "#" inside something like "C#" from opening the picker.
@@ -34,13 +35,11 @@ export function withoutRatingToken(
   return { text: text.slice(0, start) + text.slice(end), caret: start };
 }
 
-
 export function ratingToken(text: string, caret: number): RatingToken | null {
   const m = TOKEN_RE.exec(text.slice(0, caret));
   if (!m) return null;
   return { start: caret - m[1].length - 1, query: m[1] };
 }
-
 
 export function rankRatingOptions(
   ratings: PublicRating[],
@@ -60,4 +59,3 @@ export function rankRatingOptions(
   }
   return [...starts, ...contains].slice(0, limit);
 }
-
