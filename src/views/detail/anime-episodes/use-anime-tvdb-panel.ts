@@ -148,7 +148,12 @@ export function useAnimeTvdbPanel(
     })().catch(() => []);
     const publish = (type: TvdbOrderType, order: TvdbOrder) => {
       if (cancelled) return;
-      if (typeof window !== "undefined") window.__harborProfiler?.mark("season-selector:metadata-ready", { elapsedMs: Math.round(performance.now() - started), seasons: order.seasons.length, order: type });
+      if (typeof window !== "undefined")
+        window.__harborProfiler?.mark("season-selector:metadata-ready", {
+          elapsedMs: Math.round(performance.now() - started),
+          seasons: order.seasons.length,
+          order: type,
+        });
       setActiveType(type);
       setOrdering(order);
       void waitForTvdbSeasonNames(order).then((named) => {

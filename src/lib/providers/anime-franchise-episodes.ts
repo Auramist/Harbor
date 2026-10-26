@@ -9,10 +9,7 @@ import { enrichEpisodes } from "@/lib/providers/anime-episode-enrich";
 import { animeKitsuMeta } from "@/lib/providers/anime-kitsu-addon";
 import { kitsuEpisodes, type KitsuEpisode } from "@/lib/providers/kitsu";
 import { applyAnidbSeasonWindow, kitsuToTvdb, kitsuToMal } from "@/lib/providers/anime-mapping";
-import {
-  applyMalEpisodeTitles,
-  episodesMissingTitle,
-} from "@/lib/providers/episode-placeholder";
+import { applyMalEpisodeTitles, episodesMissingTitle } from "@/lib/providers/episode-placeholder";
 import { malEpisodeTitles } from "@/lib/providers/mal-episodes";
 import { tvdbEpisodesByType, tvdbEpisodesAbsolute, tvdbLangFromIso1 } from "@/lib/providers/tvdb";
 import { tmdbSeasonEpisodes } from "@/lib/providers/tmdb/tmdb-details";
@@ -107,7 +104,11 @@ export function fetchEntryEpisodes(kitsuId: number, settings: Settings): Promise
       targetLang: iso1,
       englishEpisodes: tvdbRaw?.en,
     });
-    mergeTmdbEpisodes(eps, tmdbEpsRaw, { lang: localized ? iso1 : undefined, targetLang: iso1, englishEpisodes: tmdbEnRaw });
+    mergeTmdbEpisodes(eps, tmdbEpsRaw, {
+      lang: localized ? iso1 : undefined,
+      targetLang: iso1,
+      englishEpisodes: tmdbEnRaw,
+    });
     // Fall back to English titles/overviews when the localized translation is missing (providers
     // otherwise fall back to the original, e.g. Japanese for anime). `targetLang` keeps this pass
     // from overwriting a title the user already has in their own language.

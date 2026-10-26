@@ -12,7 +12,10 @@ const MAX_CACHE_SIZE = 100; // Maximum number of cached episodes
 
 const expiry = new Map<string, number>();
 const episodeCache = new Map<string, EpisodeCacheEntry>();
-onMediaCacheClear(() => { episodeCache.clear(); expiry.clear(); });
+onMediaCacheClear(() => {
+  episodeCache.clear();
+  expiry.clear();
+});
 
 /**
  * Generate cache key for an episode
@@ -34,16 +37,16 @@ export function getCachedEpisode(
 ): EpisodeDetail | null {
   const key = getCacheKey(seriesId, season, episode, scope);
   const cached = episodeCache.get(key);
-  
+
   if (!cached) return null;
-  
+
   // Check if cache entry has expired
   const age = Date.now() - cached.timestamp;
   if (age > (expiry.get(key) ?? CACHE_DURATION_MS)) {
     episodeCache.delete(key);
     return null;
   }
-  
+
   return cached.data;
 }
 
@@ -65,7 +68,7 @@ export function cacheEpisode(
     timestamp: Date.now(),
     seriesId,
   };
-  
+
   // Use LRU set to handle eviction automatically
   lruSet(episodeCache, key, entry, MAX_CACHE_SIZE);
   for (const held of expiry.keys()) if (!episodeCache.has(held)) expiry.delete(held);

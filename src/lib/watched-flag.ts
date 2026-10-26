@@ -38,7 +38,6 @@ function migrateLegacy(): void {
   }
 }
 
-
 function load(): Set<string> {
   const scope = storeKey();
   if (cache && currentScope === scope) return cache;
@@ -75,7 +74,8 @@ export function reconcileNuvioWatchedFlags(
   let previous: string[] = [];
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
-    if (Array.isArray(parsed)) previous = parsed.filter((id): id is string => typeof id === "string");
+    if (Array.isArray(parsed))
+      previous = parsed.filter((id): id is string => typeof id === "string");
   } catch {
     // Replace malformed cache with the verified cloud state.
   }

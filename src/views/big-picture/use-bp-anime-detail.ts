@@ -167,7 +167,10 @@ export function useBpAnimeDetail(meta: Meta | null, opts?: BpAnimeDetailOptions)
         });
     };
     const onWake = () => {
-      if (document.visibilityState === "visible" && animeDetailsNeedRefresh(settingsRef.current, seed))
+      if (
+        document.visibilityState === "visible" &&
+        animeDetailsNeedRefresh(settingsRef.current, seed)
+      )
         load();
     };
     load();
@@ -204,7 +207,7 @@ export function useBpAnimeDetail(meta: Meta | null, opts?: BpAnimeDetailOptions)
     }
     let cancelled = false;
     resolvePmdbTarget(metaId, "series")
-      .then((target) => (target ?? (canonicalId ? resolvePmdbTarget(canonicalId, "series") : null)))
+      .then((target) => target ?? (canonicalId ? resolvePmdbTarget(canonicalId, "series") : null))
       .then((target) => {
         if (cancelled) return;
         return fetchPmdbWatchedKeySet(target ?? undefined);

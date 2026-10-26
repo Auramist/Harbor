@@ -39,16 +39,27 @@ test("playable anime episodes publish before the full metadata batch settles", a
   const optional = new Proxy({}, { get: () => async () => null });
   const mod = { exports: {} };
   new Function("module", "exports", "require", code)(
-    mod, mod.exports, (name) => mocks[name] ?? optional,
+    mod,
+    mod.exports,
+    (name) => mocks[name] ?? optional,
   );
   let published = null;
   let settled = false;
   const job = mod.exports.animeDetails(
     { tmdbLanguage: "en", uiLanguage: "en", tmdbKey: "" },
     { id: "kitsu:12", name: "One Piece", type: "anime" },
-    (items, id) => { published = { items, id }; },
+    (items, id) => {
+      published = { items, id };
+    },
   );
-  job.then(() => { settled = true; }, () => { settled = true; });
+  job.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(published?.id, 12);
   assert.deepEqual(published?.items, episodes);

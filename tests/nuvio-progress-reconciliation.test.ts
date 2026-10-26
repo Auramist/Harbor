@@ -575,11 +575,12 @@ test("a table snapshot that contradicts the RPC cannot erase local history", asy
       "nuvio-1",
     );
     globalThis.fetch = async (url) =>
-      String(url).includes("/rpc/")
-        ? response([previous], 200, "0-0/1")
-        : response([], 200, "*/0");
+      String(url).includes("/rpc/") ? response([previous], 200, "0-0/1") : response([], 200, "*/0");
     const result = await pullWatchProgressFromNuvio(1);
-    assert.equal(result.some((row) => row.content_id === "conflict"), true);
+    assert.equal(
+      result.some((row) => row.content_id === "conflict"),
+      true,
+    );
     assert.ok(localCwEntry("conflict", false, "nuvio-1"));
     assert.equal(readCachedWatchProgress(1, accountId).length, 1);
   });
@@ -1007,12 +1008,14 @@ test("an older pending progress update cannot overwrite a newer server checkpoin
   });
 });
 
-
 test("progress delivery never forces a watched-history snapshot", async () => {
   await customSnapshot("progress-only", async () => {
     const server = recoveringServer();
     const paths: string[] = [];
-    globalThis.fetch = async (url, init) => { paths.push(String(url)); return server.fetch(url, init); };
+    globalThis.fetch = async (url, init) => {
+      paths.push(String(url));
+      return server.fetch(url, init);
+    };
     await pushWatchProgressToNuvio(1, "progress-only", 600, 1200, 1, 1);
     server.online();
     assert.equal(await flushPendingNuvioMutations(), true);

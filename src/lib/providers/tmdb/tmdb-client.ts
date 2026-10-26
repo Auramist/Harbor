@@ -136,12 +136,23 @@ export async function get<T>(
     return cacheable ? structuredClone(data) : data;
   }
   // Only public title/season metadata belongs in the durable cache.
-  const metadata = /^(?:tv|movie)\/\d+(?:\/(?:season\/\d+(?:\/episode\/\d+)?(?:\/images)?|images|external_ids|translations))?$/.test(path);
+  const metadata =
+    /^(?:tv|movie)\/\d+(?:\/(?:season\/\d+(?:\/episode\/\d+)?(?:\/images)?|images|external_ids|translations))?$/.test(
+      path,
+    );
   const run = metadata
-    ? cachedMedia<T>("tmdb-resource", [target], () => fetchWithRetry<T>(target, path), { ttl: (value) => {
-      if (path.endsWith("/images") && !Object.values(value as Record<string, unknown>).some((field) => Array.isArray(field) && field.length > 0)) return MEDIA_TTL.recent;
-      return metadataCacheTtl(value);
-    } })
+    ? cachedMedia<T>("tmdb-resource", [target], () => fetchWithRetry<T>(target, path), {
+        ttl: (value) => {
+          if (
+            path.endsWith("/images") &&
+            !Object.values(value as Record<string, unknown>).some(
+              (field) => Array.isArray(field) && field.length > 0,
+            )
+          )
+            return MEDIA_TTL.recent;
+          return metadataCacheTtl(value);
+        },
+      })
     : fetchWithRetry<T>(target, path);
   tmdbInflight.set(target, run);
   try {

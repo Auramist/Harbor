@@ -50,10 +50,8 @@ function open(): Promise<IDBDatabase | null> {
       const index = db.objectStoreNames.contains("index")
         ? request.transaction!.objectStore("index")
         : db.createObjectStore("index", { keyPath: "key" });
-      if (!index.indexNames.contains("expired"))
-        index.createIndex("expired", "staleUntil");
-      if (!index.indexNames.contains("accessed"))
-        index.createIndex("accessed", "accessedAt");
+      if (!index.indexNames.contains("expired")) index.createIndex("expired", "staleUntil");
+      if (!index.indexNames.contains("accessed")) index.createIndex("accessed", "accessedAt");
     };
     request.onerror = fail;
     request.onblocked = fail;

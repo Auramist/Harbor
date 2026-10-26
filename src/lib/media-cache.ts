@@ -285,7 +285,9 @@ export function createMediaCache(
           const storedAt = now();
           if (scope === generation) {
             retryAt.delete(key);
-            void save(key, value, policy, storedAt).catch(() => { counters.errors++; });
+            void save(key, value, policy, storedAt).catch(() => {
+              counters.errors++;
+            });
           }
           return { value, storedAt };
         } catch {
@@ -295,9 +297,10 @@ export function createMediaCache(
             while (retryAt.size > 300) retryAt.delete(retryAt.keys().next().value!);
           }
           return {
-            value: !policy.staleWhileRevalidate && policy.fallbackOnError !== false && stale
-              ? copy(stale.value as T)
-              : null,
+            value:
+              !policy.staleWhileRevalidate && policy.fallbackOnError !== false && stale
+                ? copy(stale.value as T)
+                : null,
             storedAt: stale?.storedAt,
           };
         }
@@ -327,7 +330,8 @@ export function createMediaCache(
     async peek(key: string) {
       const scope = generation;
       await clearing;
-      const record = memory.get(key) ?? pendingWrites.get(key) ?? (await store.get(key).catch(() => null));
+      const record =
+        memory.get(key) ?? pendingWrites.get(key) ?? (await store.get(key).catch(() => null));
       if (scope !== generation || !validRecord(record, key) || record.staleUntil <= now())
         return null;
       remember(record);

@@ -78,30 +78,56 @@ test("concurrent misses share the loader and return separate snapshots", async (
   assert.notEqual(results[0].value, results[1].value);
 });
 
-test("provider results and unrelated lookups do not wait for cache writes", { timeout: 2000 }, async () => {
-  const gate = deferred();
-  const f = fixture({ memoryBytes: 0, store: { put: async () => { await gate.promise; return true; } } });
-  try {
-    const first = await f.cache.load("show", async () => ({ episodes: [1] }));
-    assert.deepEqual(first.value, { episodes: [1] });
-    assert.equal(first.storedAt, 1000);
-    assert.deepEqual((await f.cache.load("show", async () => assert.fail("pending snapshot lost"))).value, first.value);
-    const other = await f.cache.load("other", async () => [2]);
-    assert.deepEqual(other.value, [2]);
-    assert.equal((await f.cache.peek("show")).storedAt, 1000);
-  } finally {
-    gate.resolve();
-    await f.cache.flush();
-  }
-});
+test(
+  "provider results and unrelated lookups do not wait for cache writes",
+  { timeout: 2000 },
+  async () => {
+    const gate = deferred();
+    const f = fixture({
+      memoryBytes: 0,
+      store: {
+        put: async () => {
+          await gate.promise;
+          return true;
+        },
+      },
+    });
+    try {
+      const first = await f.cache.load("show", async () => ({ episodes: [1] }));
+      assert.deepEqual(first.value, { episodes: [1] });
+      assert.equal(first.storedAt, 1000);
+      assert.deepEqual(
+        (await f.cache.load("show", async () => assert.fail("pending snapshot lost"))).value,
+        first.value,
+      );
+      const other = await f.cache.load("other", async () => [2]);
+      assert.deepEqual(other.value, [2]);
+      assert.equal((await f.cache.peek("show")).storedAt, 1000);
+    } finally {
+      gate.resolve();
+      await f.cache.flush();
+    }
+  },
+);
 
 test("reads during clearing wait for the clear instead of reviving disk snapshots", async () => {
   const gate = deferred();
-  const f = fixture({ store: { async clear() { await gate.promise; f.records.clear(); return true; } } });
+  const f = fixture({
+    store: {
+      async clear() {
+        await gate.promise;
+        f.records.clear();
+        return true;
+      },
+    },
+  });
   await f.cache.save("show", [1], {});
   const clearing = f.cache.clear();
   let loaded = false;
-  const load = f.cache.load("show", async () => { loaded = true; return [2]; });
+  const load = f.cache.load("show", async () => {
+    loaded = true;
+    return [2];
+  });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(loaded, false);
   gate.resolve();

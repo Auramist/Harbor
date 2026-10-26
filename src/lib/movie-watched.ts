@@ -77,7 +77,8 @@ export function reconcileNuvioMovieWatched(
   let previous: string[] = [];
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
-    if (Array.isArray(parsed)) previous = parsed.filter((id): id is string => typeof id === "string");
+    if (Array.isArray(parsed))
+      previous = parsed.filter((id): id is string => typeof id === "string");
   } catch {
     // Replace malformed cache with the verified cloud state.
   }

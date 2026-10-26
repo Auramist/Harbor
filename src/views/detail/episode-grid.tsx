@@ -40,7 +40,8 @@ export function EpisodeGrid<T extends { number: number } = GridEpisode>({
     [episodes, sort],
   );
   const [page, setPage] = useState(0);
-  const keyFor = (item: T | undefined) => item ? itemKey?.(item) ?? (item as unknown as GridEpisode).key : "";
+  const keyFor = (item: T | undefined) =>
+    item ? (itemKey?.(item) ?? (item as unknown as GridEpisode).key) : "";
   const resetKey = `${sort}:${displayed.length}:${keyFor(displayed[0])}:${keyFor(displayed[displayed.length - 1])}`;
   useEffect(() => setPage(0), [resetKey]);
 
@@ -54,7 +55,9 @@ export function EpisodeGrid<T extends { number: number } = GridEpisode>({
 
   const change = (p: number) => {
     setPage(p);
-    requestAnimationFrame(() => wrapRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    requestAnimationFrame(() =>
+      wrapRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
   };
   const goToEpisode = (n: number) => {
     const idx = displayed.findIndex((e) => e.number === n);
@@ -70,17 +73,18 @@ export function EpisodeGrid<T extends { number: number } = GridEpisode>({
         }}
       >
         {pageItems.map((item) => {
-          const g = present ? present(item) : item as unknown as GridEpisode;
+          const g = present ? present(item) : (item as unknown as GridEpisode);
           return (
-          <EpisodeGridCard
-            key={g.key}
-            meta={meta}
-            g={g}
-            progress={progressFor(g)}
-            spoiler={spoilerFor?.(g)}
-            onContextMenu={onContextMenu}
-          />
-        ); })}
+            <EpisodeGridCard
+              key={g.key}
+              meta={meta}
+              g={g}
+              progress={progressFor(g)}
+              spoiler={spoilerFor?.(g)}
+              onContextMenu={onContextMenu}
+            />
+          );
+        })}
       </div>
       <EpisodePager
         page={safePage}

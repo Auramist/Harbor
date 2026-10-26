@@ -23,7 +23,16 @@ function load(path: string, mocks: Record<string, unknown>) {
   const dependencies: Record<string, unknown> = {
     "@/lib/providers/anime-episode-build": { isForeignScriptTitle, isGenericEpisodeName },
     "@/lib/dates": { isUpcomingDate },
-    "@/lib/media-cache": { onMediaCacheClear() {}, mediaCacheGeneration: () => 0, saveMedia: async () => true, cachedMedia: (_namespace: string, _scope: unknown[], loader: () => Promise<unknown>) => loader(), episodeCacheTtl: () => 43_200_000, metadataCacheTtl: () => 43_200_000, MEDIA_TTL: { episodes: 43_200_000, settled: 604_800_000 } },
+    "@/lib/media-cache": {
+      onMediaCacheClear() {},
+      mediaCacheGeneration: () => 0,
+      saveMedia: async () => true,
+      cachedMedia: (_namespace: string, _scope: unknown[], loader: () => Promise<unknown>) =>
+        loader(),
+      episodeCacheTtl: () => 43_200_000,
+      metadataCacheTtl: () => 43_200_000,
+      MEDIA_TTL: { episodes: 43_200_000, settled: 604_800_000 },
+    },
     "./episode-placeholder": placeholders,
     "@/lib/providers/episode-placeholder": placeholders,
     "@/lib/providers/mal-episodes": { malEpisodeTitles: async () => null },
@@ -483,7 +492,15 @@ test("TVDB ordering preserves translation evidence with the same existing reques
     },
     "./tvdb-order-cache": {
       isStaleTvdbOrder,
-      loadOrderCache: (() => { let saved: unknown; return async (_key: string, _id: number, _type: string, loader: () => Promise<unknown>) => ({ value: saved ??= await loader() }); })(),
+      loadOrderCache: (() => {
+        let saved: unknown;
+        return async (
+          _key: string,
+          _id: number,
+          _type: string,
+          loader: () => Promise<unknown>,
+        ) => ({ value: (saved ??= await loader()) });
+      })(),
       persistOrderCache: async () => true,
     },
     "@/lib/episode-text-language": { episodeTextLanguage },
@@ -512,7 +529,17 @@ test("persisted ordering carries provenance, ignores old entries, and separates 
     entries.set("harbor.tvdbo.v5.42:aired:tur", JSON.stringify({ t: Date.now() }));
     assert.equal(cache.readOrderCache(42, "aired:tur"), null);
     const snapshot = order(turkishTitle, finaleTitle, turkishOverview, "tr");
-    entries.set("harbor.tvdbo.v8.42:aired:tur", JSON.stringify({ t: Date.now(), textEvidenceVersion: 1, seasons: snapshot.seasons, bySeason: [...snapshot.bySeason], absByEpId: [...snapshot.absByEpId], imageByAbs: [...snapshot.imageByAbs] }));
+    entries.set(
+      "harbor.tvdbo.v8.42:aired:tur",
+      JSON.stringify({
+        t: Date.now(),
+        textEvidenceVersion: 1,
+        seasons: snapshot.seasons,
+        bySeason: [...snapshot.bySeason],
+        absByEpId: [...snapshot.absByEpId],
+        imageByAbs: [...snapshot.imageByAbs],
+      }),
+    );
     assert.equal(cache.readOrderCache(42, "aired:tur").bySeason.get(2)[0].nameLanguage, "tr");
     assert.equal(cache.readOrderCache(42, "aired:eng"), null);
   } finally {
@@ -854,7 +881,15 @@ test("ordering preserves original fallback provenance without extra requests", a
     },
     "./tvdb-order-cache": {
       isStaleTvdbOrder,
-      loadOrderCache: (() => { let saved: unknown; return async (_key: string, _id: number, _type: string, loader: () => Promise<unknown>) => ({ value: saved ??= await loader() }); })(),
+      loadOrderCache: (() => {
+        let saved: unknown;
+        return async (
+          _key: string,
+          _id: number,
+          _type: string,
+          loader: () => Promise<unknown>,
+        ) => ({ value: (saved ??= await loader()) });
+      })(),
       persistOrderCache: async () => true,
     },
     "@/lib/episode-text-language": { episodeTextLanguage },
@@ -927,7 +962,14 @@ test("legacy order caches retain their data but downgrade unreliable language ev
     const cache = load("src/lib/providers/tvdb-order-cache.ts", {});
     const snapshot = order("Le début", "物語", "Une description", "tr");
     const key = "harbor.tvdbo.v8.42:aired:tur";
-    const legacy = { t: Date.now(), textEvidenceVersion: 1, seasons: snapshot.seasons, bySeason: [...snapshot.bySeason], absByEpId: [...snapshot.absByEpId], imageByAbs: [...snapshot.imageByAbs] };
+    const legacy = {
+      t: Date.now(),
+      textEvidenceVersion: 1,
+      seasons: snapshot.seasons,
+      bySeason: [...snapshot.bySeason],
+      absByEpId: [...snapshot.absByEpId],
+      imageByAbs: [...snapshot.imageByAbs],
+    };
     delete legacy.textEvidenceVersion;
     entries.set(key, JSON.stringify(legacy));
     const restored = cache.readOrderCache(42, "aired:tur");

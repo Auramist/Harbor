@@ -99,7 +99,11 @@ const PROFILE_KEY_PREFIXES = [
 ];
 
 function purgeProfileStorage(id: string): void {
-  try { purgeGameNotes(id); } catch { /* Keep the existing profile cleanup best-effort. */ }
+  try {
+    purgeGameNotes(id);
+  } catch {
+    /* Keep the existing profile cleanup best-effort. */
+  }
   try {
     for (const prefix of PROFILE_KEY_PREFIXES) localStorage.removeItem(`${prefix}${id}`);
     localStorage.removeItem(`harbor.games.search-history.v1:${encodeURIComponent(id)}`);
@@ -764,7 +768,6 @@ export function ProfilesProvider({ children }: { children: ReactNode }) {
     setPickerViewState({ kind: "list" });
   }, [isCurrentProfileLocked]);
 
-
   const createProfile = useCallback<ProfilesValue["createProfile"]>(
     ({ name, avatar, color, kid }) => {
       const primary = state.profiles.find((p) => p.isPrimary) ?? state.profiles[0];
@@ -796,7 +799,7 @@ export function ProfilesProvider({ children }: { children: ReactNode }) {
           ? {
               ...p,
               ...patch,
-              kid: p.isPrimary ? null : (patch.kid !== undefined ? patch.kid : p.kid),
+              kid: p.isPrimary ? null : patch.kid !== undefined ? patch.kid : p.kid,
               name: patch.name != null ? patch.name.trim().slice(0, 32) || p.name : p.name,
             }
           : p,
@@ -899,7 +902,6 @@ export function ProfilesProvider({ children }: { children: ReactNode }) {
       isCurrentProfileLocked,
       clearSessionUnlocks,
     ],
-
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

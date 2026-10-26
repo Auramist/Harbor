@@ -22,27 +22,39 @@ test("changing credentials at the same image URL fetches a replacement and relea
   const dependencies = {
     react: React,
     "./object-url-cache": { createObjectUrlCache: () => pool },
-    "@tauri-apps/api/core": { invoke: async (_command, { args }) => {
-      calls.push(args.headers.authorization);
-      return { ok: true, status: 200, body: "iVBORw0KGgo=", contentType: "image/png" };
-    } },
+    "@tauri-apps/api/core": {
+      invoke: async (_command, { args }) => {
+        calls.push(args.headers.authorization);
+        return { ok: true, status: 200, body: "iVBORw0KGgo=", contentType: "image/png" };
+      },
+    },
     "@/lib/manga/sources/suwayomi/auth-registry": { suwayomiAuthFor: () => auth },
     "@/lib/settings": { useSettings: () => ({ settings: { posterQuality: "max" } }) },
     "@/lib/idb-cache": {},
   };
   const exports = {};
-  const code = ts.transpileModule(readFileSync(new URL("../src/lib/remote-image-proxy.ts", import.meta.url), "utf8"), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  }).outputText;
+  const code = ts.transpileModule(
+    readFileSync(new URL("../src/lib/remote-image-proxy.ts", import.meta.url), "utf8"),
+    {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    },
+  ).outputText;
   new Function("require", "exports", code)((name) => dependencies[name], exports);
-  function View() { resolved = exports.useProxiedImageSrc("https://example.com/cover.png"); return null; }
+  function View() {
+    resolved = exports.useProxiedImageSrc("https://example.com/cover.png");
+    return null;
+  }
   const root = createRoot(document.querySelector("#app"));
   try {
-    await React.act(async () => { root.render(React.createElement(View, { iteration: 0 })); });
+    await React.act(async () => {
+      root.render(React.createElement(View, { iteration: 0 }));
+    });
     const first = resolved;
     assert.ok(first);
     auth = "Basic second";
-    await React.act(async () => { root.render(React.createElement(View, { iteration: 1 })); });
+    await React.act(async () => {
+      root.render(React.createElement(View, { iteration: 1 }));
+    });
     assert.ok(resolved);
     assert.notEqual(resolved, first);
     assert.deepEqual(calls, ["Basic first", "Basic second"]);

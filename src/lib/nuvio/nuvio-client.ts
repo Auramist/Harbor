@@ -26,7 +26,8 @@ export function loadNuvioState(): NuvioAccountState {
     return {
       session: parsed.session ?? null,
       profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
-      activeProfileIndex: typeof parsed.activeProfileIndex === "number" ? parsed.activeProfileIndex : 1,
+      activeProfileIndex:
+        typeof parsed.activeProfileIndex === "number" ? parsed.activeProfileIndex : 1,
       lastSyncedAt: typeof parsed.lastSyncedAt === "number" ? parsed.lastSyncedAt : null,
     };
   } catch {
@@ -85,7 +86,11 @@ export function getNuvioAccountId(): string | null {
 
 export function isNuvioSignedIn(): boolean {
   const state = loadNuvioState();
-  return state.session != null && typeof state.session.access_token === "string" && state.session.access_token.length > 0;
+  return (
+    state.session != null &&
+    typeof state.session.access_token === "string" &&
+    state.session.access_token.length > 0
+  );
 }
 
 /**

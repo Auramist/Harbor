@@ -86,7 +86,10 @@ function seriesModule() {
       tmdbEpisodeNames: async () => new Map(),
       tmdbSeasonEpisodes: async () => [],
     },
-    "./providers/tmdb/tmdb-client": { tmdbLanguageIso: () => "en", effectiveTmdbLanguage: () => "en" },
+    "./providers/tmdb/tmdb-client": {
+      tmdbLanguageIso: () => "en",
+      effectiveTmdbLanguage: () => "en",
+    },
     "./providers/tmdb/tmdb-image-rungs": { tmdbStillUrl: () => undefined },
     "./localized-text": { pickLocalizedText: () => undefined },
     "./meta-resource": {

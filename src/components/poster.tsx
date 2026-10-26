@@ -413,8 +413,18 @@ function PosterBody({
   const exhausted = cursor >= candidates.length;
   // Remote plain-HTTP images (e.g. a Suwayomi server on a VPS) are mixed-content
   // blocked by the WebView; resolve them to a same-origin blob URL.
-  const currentSrc = useProxiedImageSrc(current, { forceProxy: /^https?:\/\//.test(current ?? ""), persistent: true, enabled: imageEnabled && (qMult === 0 || targetPx > 0), originalSize: true });
-  const displayedSrc = useProxiedImageSrc(displayed, { forceProxy: /^https?:\/\//.test(displayed ?? ""), persistent: true, enabled: imageEnabled, originalSize: true });
+  const currentSrc = useProxiedImageSrc(current, {
+    forceProxy: /^https?:\/\//.test(current ?? ""),
+    persistent: true,
+    enabled: imageEnabled && (qMult === 0 || targetPx > 0),
+    originalSize: true,
+  });
+  const displayedSrc = useProxiedImageSrc(displayed, {
+    forceProxy: /^https?:\/\//.test(displayed ?? ""),
+    persistent: true,
+    enabled: imageEnabled,
+    originalSize: true,
+  });
   const stateCauseRef = useRef<{
     targetPx: number;
     idx: number;

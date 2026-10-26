@@ -135,7 +135,8 @@ export function getEpisodeProgress(
       readManual(id, season, episode) === true ||
       (canonDiffers && readManual(id, canonS, canonE) === true),
   );
-  const done = manualDone || traktDone || stremioDone || anilistDone || simklDone || malDone || pmdbDone;
+  const done =
+    manualDone || traktDone || stremioDone || anilistDone || simklDone || malDone || pmdbDone;
 
   return {
     ratio: done ? 1 : ratio,

@@ -172,15 +172,32 @@ const TT_CACHE_MAX = 800;
 const SEASON_CACHE_MAX = 400;
 class ProjectionCache<T> extends Map<string, T> {
   private expires = new Map<string, number>();
-  constructor() { super(); onMediaCacheClear(() => this.clear()); }
+  constructor() {
+    super();
+    onMediaCacheClear(() => this.clear());
+  }
   override get(key: string) {
-    if ((this.expires.get(key) ?? 0) <= Date.now()) { this.delete(key); return undefined; }
+    if ((this.expires.get(key) ?? 0) <= Date.now()) {
+      this.delete(key);
+      return undefined;
+    }
     return super.get(key);
   }
-  override has(key: string) { return this.get(key) !== undefined; }
-  override set(key: string, value: T) { this.expires.set(key, Date.now() + MEDIA_TTL.recent); return super.set(key, value); }
-  override delete(key: string) { this.expires.delete(key); return super.delete(key); }
-  override clear() { this.expires.clear(); super.clear(); }
+  override has(key: string) {
+    return this.get(key) !== undefined;
+  }
+  override set(key: string, value: T) {
+    this.expires.set(key, Date.now() + MEDIA_TTL.recent);
+    return super.set(key, value);
+  }
+  override delete(key: string) {
+    this.expires.delete(key);
+    return super.delete(key);
+  }
+  override clear() {
+    this.expires.clear();
+    super.clear();
+  }
 }
 const ttCache = new ProjectionCache<Adjacent>();
 const tmdbSeasonCache = new ProjectionCache<PlayEpisode[]>();
@@ -254,12 +271,21 @@ export async function fetchAdjacentEpisodes(
   if (meta.type !== "series" && !isAnimeId(meta.id)) return { prev: null, next: null };
 
   if (meta.id.startsWith("tt")) {
-    const key = JSON.stringify([meta.id, current.season, current.episode, opts.tmdbKey, effectiveTmdbLanguage(), readAuthKey(), preferCustomMeta()]);
+    const key = JSON.stringify([
+      meta.id,
+      current.season,
+      current.episode,
+      opts.tmdbKey,
+      effectiveTmdbLanguage(),
+      readAuthKey(),
+      preferCustomMeta(),
+    ]);
     if (!opts.skip && ttCache.has(key)) return ttCache.get(key)!;
     const eps = await loadCinemetaEpisodes(meta.id, opts.tmdbKey);
     if (!eps) return { prev: null, next: null };
     const result = computeAdjacent(eps, current, opts.skip);
-    if (!opts.skip && generation === mediaCacheGeneration()) lruSet(ttCache, key, result, TT_CACHE_MAX);
+    if (!opts.skip && generation === mediaCacheGeneration())
+      lruSet(ttCache, key, result, TT_CACHE_MAX);
     return result;
   }
 
@@ -405,7 +431,8 @@ async function loadCinemetaEpisodes(id: string, tmdbKey?: string): Promise<PlayE
   eps.sort((a, b) => a.season - b.season || a.episode - b.episode);
   if (prefer) await overlayPreferredEpisodes(id, eps);
   const named = tmdbKey ? await overlayTmdbEpisodeNames(id, tmdbKey, eps) : eps;
-  if (generation === mediaCacheGeneration()) lruSet(cinemetaListCache, cacheKey, named, SEASON_CACHE_MAX);
+  if (generation === mediaCacheGeneration())
+    lruSet(cinemetaListCache, cacheKey, named, SEASON_CACHE_MAX);
   return named;
 }
 
@@ -612,7 +639,8 @@ async function tmdbSeason(key: string, tvId: number, season: number): Promise<Pl
       runtime: e.runtime && e.runtime > 0 ? e.runtime : undefined,
     }))
     .sort((a, b) => a.episode - b.episode);
-  if (eps.length > 0 && generation === mediaCacheGeneration()) lruSet(tmdbSeasonCache, cacheKey, eps, SEASON_CACHE_MAX);
+  if (eps.length > 0 && generation === mediaCacheGeneration())
+    lruSet(tmdbSeasonCache, cacheKey, eps, SEASON_CACHE_MAX);
   return eps;
 }
 

@@ -90,11 +90,21 @@ export async function fetchTvdbOrderBySeriesId(
   if (running) return running;
   const load = (async () => {
     const generation = mediaCacheGeneration();
-    const cached = await loadOrderCache(apiKey, seriesId, typeKey,
-      () => build(apiKey, seriesId, seasonType, lang, allowProxyNames), allowProxyNames);
+    const cached = await loadOrderCache(
+      apiKey,
+      seriesId,
+      typeKey,
+      () => build(apiKey, seriesId, seasonType, lang, allowProxyNames),
+      allowProxyNames,
+    );
     const result = cached.value;
     if (!result) return null;
-    if (typeof window !== "undefined") window.__harborProfiler?.mark("tvdb-order:metadata-ready", { elapsedMs: Math.round(performance.now() - started), seasons: result.seasons.length, order: seasonType });
+    if (typeof window !== "undefined")
+      window.__harborProfiler?.mark("tvdb-order:metadata-ready", {
+        elapsedMs: Math.round(performance.now() - started),
+        seasons: result.seasons.length,
+        order: seasonType,
+      });
     const enrich = async (result: TvdbOrder, storedAt = Date.now()): Promise<TvdbOrder> => {
       if (result.seasonNamesResolved || !(mode === "direct" || allowProxyNames)) return result;
       const nameType =
@@ -119,13 +129,21 @@ export async function fetchTvdbOrderBySeriesId(
               };
             }),
           };
-          await persistOrderCache(apiKey, seriesId, typeKey, enriched, storedAt, generation, allowProxyNames);
+          await persistOrderCache(
+            apiKey,
+            seriesId,
+            typeKey,
+            enriched,
+            storedAt,
+            generation,
+            allowProxyNames,
+          );
           return enriched;
         })
         .catch(() => result);
     };
     const enrichment = cached.refresh
-      ? cached.refresh.then((fresh) => fresh ? enrich(fresh) : result)
+      ? cached.refresh.then((fresh) => (fresh ? enrich(fresh) : result))
       : enrich(result, cached.storedAt);
     nameInflight.set(result, enrichment);
     return result;
@@ -163,7 +181,9 @@ async function build(
       ? Promise.resolve(new Map())
       : tvdbSeasons(apiKey, seriesId, nameTypeSlug, lang),
     slug === "default" ? defaults : tvdbEpisodesByType(apiKey, seriesId, slug),
-    requestedLang ? tvdbEpisodesByType(apiKey, seriesId, slug, requestedLang).catch(() => []) : Promise.resolve<TvdbEpisode[]>([]),
+    requestedLang
+      ? tvdbEpisodesByType(apiKey, seriesId, slug, requestedLang).catch(() => [])
+      : Promise.resolve<TvdbEpisode[]>([]),
     tvdbEpisodesByType(apiKey, seriesId, slug, "eng").catch(() => []),
   ]);
   const names = tvdbBaseSeasonNames(seasonInfos);

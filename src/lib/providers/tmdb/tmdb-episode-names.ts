@@ -11,7 +11,10 @@ import type { TmdbEpisodeText } from "./tmdb-episode-name-merge";
 const NAMES_MAX = 120;
 const namesCache = new Map<string, { value: Map<number, TmdbEpisodeText>; expires: number }>();
 const inflight = new Map<string, Promise<Map<number, TmdbEpisodeText>>>();
-onMediaCacheClear(() => { namesCache.clear(); inflight.clear(); });
+onMediaCacheClear(() => {
+  namesCache.clear();
+  inflight.clear();
+});
 const NO_NAMES: Map<number, TmdbEpisodeText> = new Map();
 
 registerCache("tmdb:episodeNames", () => namesCache.size);
@@ -50,9 +53,17 @@ export async function tmdbEpisodeNames(
         still: tmdbStillUrl(e.stillPath),
       });
     }
-    if (generation === mediaCacheGeneration() && (tvId == null || raw.length > 0)) lruSet(namesCache, cacheKey, { value: out, expires: Date.now() + MEDIA_TTL.recent }, NAMES_MAX);
+    if (generation === mediaCacheGeneration() && (tvId == null || raw.length > 0))
+      lruSet(
+        namesCache,
+        cacheKey,
+        { value: out, expires: Date.now() + MEDIA_TTL.recent },
+        NAMES_MAX,
+      );
     return out;
-  })().finally(() => { if (inflight.get(cacheKey) === run) inflight.delete(cacheKey); });
+  })().finally(() => {
+    if (inflight.get(cacheKey) === run) inflight.delete(cacheKey);
+  });
   inflight.set(cacheKey, run);
   return run;
 }

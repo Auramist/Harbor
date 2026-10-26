@@ -29,7 +29,8 @@ const cache = new Map<string, Record<string, LocalCwEntry>>();
 
 function nuvioAccountId(): string {
   try {
-    const raw = localStorage.getItem("harbor.nuvio.state.v1") ?? localStorage.getItem("harbor.nuvio.state");
+    const raw =
+      localStorage.getItem("harbor.nuvio.state.v1") ?? localStorage.getItem("harbor.nuvio.state");
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed?.session?.user?.id) return String(parsed.session.user.id);
@@ -194,11 +195,16 @@ export function saveLocalCwBatch(entries: LocalCwEntry[], ownerId?: string, shar
   if (changed) emit();
 }
 
-export function listLocalCw(privateOnly = !!privateCwProfileId(), ownerId?: string): LocalCwEntry[] {
+export function listLocalCw(
+  privateOnly = !!privateCwProfileId(),
+  ownerId?: string,
+): LocalCwEntry[] {
   const isNuvio = isNuvioMode();
   const entries = Object.values(readAll(storeKey(privateOnly, ownerId)));
   if (!isNuvio) {
-    return entries.filter((e) => !(e.id && (e as any).external === "nuvio")).sort((a, b) => b.t - a.t);
+    return entries
+      .filter((e) => !(e.id && (e as any).external === "nuvio"))
+      .sort((a, b) => b.t - a.t);
   }
   return entries.sort((a, b) => b.t - a.t);
 }

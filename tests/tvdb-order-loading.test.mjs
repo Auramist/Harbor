@@ -6,7 +6,13 @@ import ts from "typescript";
 import * as episodeTextLanguage from "../src/lib/episode-text-language.ts";
 import * as episodePlaceholder from "../src/lib/providers/episode-placeholder.ts";
 import * as dates from "../src/lib/dates.ts";
-import { createMediaCache, mediaCacheKey, episodeCacheTtl, metadataCacheTtl, MEDIA_TTL } from "../src/lib/media-cache.ts";
+import {
+  createMediaCache,
+  mediaCacheKey,
+  episodeCacheTtl,
+  metadataCacheTtl,
+  MEDIA_TTL,
+} from "../src/lib/media-cache.ts";
 import * as localizedText from "../src/lib/localized-text.ts";
 
 function deferred() {
@@ -61,8 +67,7 @@ function fixture({
     else if (path.includes("/episodes/")) {
       if (episodePage) return episodePage(new URL(url));
       data = { episodes };
-    }
-    else data = { seasons };
+    } else data = { seasons };
     return { ok: true, status: 200, json: async () => ({ data }) };
   }
   function load(file, dependencies) {
@@ -85,20 +90,47 @@ function fixture({
     return module.exports;
   }
   const store = {
-    async get(key) { return storage.has(key) ? JSON.parse(storage.get(key)) : null; },
-    async put(record) { storage.set(record.key, JSON.stringify(record)); return true; },
-    async list() { return [...storage.entries()].filter(([key]) => key.startsWith("v1:")).map(([, value]) => JSON.parse(value)); },
-    async remove(keys) { keys.forEach((key) => storage.delete(key)); },
-    async clear() { for (const key of storage.keys()) if (key.startsWith("v1:")) storage.delete(key); return true; },
+    async get(key) {
+      return storage.has(key) ? JSON.parse(storage.get(key)) : null;
+    },
+    async put(record) {
+      storage.set(record.key, JSON.stringify(record));
+      return true;
+    },
+    async list() {
+      return [...storage.entries()]
+        .filter(([key]) => key.startsWith("v1:"))
+        .map(([, value]) => JSON.parse(value));
+    },
+    async remove(keys) {
+      keys.forEach((key) => storage.delete(key));
+    },
+    async clear() {
+      for (const key of storage.keys()) if (key.startsWith("v1:")) storage.delete(key);
+      return true;
+    },
   };
   const media = createMediaCache(store);
   const api = {
-    MEDIA_TTL, episodeCacheTtl, metadataCacheTtl, mediaCacheGeneration: media.generation, onMediaCacheClear() {},
-    async loadMedia(namespace, scope, loader, policy) { return media.load(await mediaCacheKey(namespace, scope), loader, policy); },
-    async cachedMedia(...args) { return (await api.loadMedia(...args)).value; },
-    async readMedia(namespace, scope) { return media.peek(await mediaCacheKey(namespace, scope)); },
+    MEDIA_TTL,
+    episodeCacheTtl,
+    metadataCacheTtl,
+    mediaCacheGeneration: media.generation,
+    onMediaCacheClear() {},
+    async loadMedia(namespace, scope, loader, policy) {
+      return media.load(await mediaCacheKey(namespace, scope), loader, policy);
+    },
+    async cachedMedia(...args) {
+      return (await api.loadMedia(...args)).value;
+    },
+    async readMedia(namespace, scope) {
+      return media.peek(await mediaCacheKey(namespace, scope));
+    },
     async saveMedia(namespace, scope, value, policy, storedAt, generation = media.generation()) {
-      return generation === media.generation() && media.save(await mediaCacheKey(namespace, scope), value, policy, storedAt);
+      return (
+        generation === media.generation() &&
+        media.save(await mediaCacheKey(namespace, scope), value, policy, storedAt)
+      );
     },
   };
   const tvdb = load("src/lib/providers/tvdb.ts", {
@@ -200,15 +232,30 @@ test("concurrent cold loads share one order and name enrichment", async () => {
 
 test("core and English catalogs overlap and warm availability uses durable metadata", async () => {
   const gate = deferred();
-  const f = fixture({ episodePage: async () => {
-    await gate.promise;
-    return { ok: true, status: 200, json: async () => ({ data: { episodes: [{ id: 1, number: 1, seasonNumber: 1, name: "Real title" }] } }) };
-  } });
+  const f = fixture({
+    episodePage: async () => {
+      await gate.promise;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: { episodes: [{ id: 1, number: 1, seasonNumber: 1, name: "Real title" }] },
+        }),
+      };
+    },
+  });
   const pending = f.fetchTvdbOrderBySeriesId("", 1, "aired", "eng");
   try {
-    await promptly((async () => { while (!f.calls.some((path) => path.includes("/episodes/default/eng"))) await new Promise((resolve) => setTimeout(resolve, 0)); })());
+    await promptly(
+      (async () => {
+        while (!f.calls.some((path) => path.includes("/episodes/default/eng")))
+          await new Promise((resolve) => setTimeout(resolve, 0));
+      })(),
+    );
     assert.ok(f.calls.some((path) => path.endsWith("/episodes/default")));
-  } finally { gate.resolve(); }
+  } finally {
+    gate.resolve();
+  }
   assert.ok(await pending);
   const restarted = fixture({ storage: f.storage });
   assert.equal(await restarted.tvdb.tvdbOrderTypeHasEpisodes("", 1, "aired"), true);
@@ -249,7 +296,9 @@ test("a regular proxy order cannot suppress anime season-name enrichment", async
     assert.equal(anime.seasonNamesResolved, false);
     f.names.resolve();
     assert.equal((await f.waitForTvdbSeasonNames(anime)).seasonNamesResolved, true);
-  } finally { f.names.resolve(); }
+  } finally {
+    f.names.resolve();
+  }
 });
 
 test("custom specials titles survive both proxy and English translation paths", async () => {
@@ -264,9 +313,12 @@ test("translation work is bounded for large series", async () => {
   const f = fixture({ blockNames: true });
   try {
     const order = await promptly(f.fetchTvdbOrderBySeriesId("test-key", 1, "aired", "eng"));
-    await promptly((async () => {
-      while (f.calls.filter((p) => p.includes("/translations/")).length < 4) await new Promise((r) => setTimeout(r, 0));
-    })());
+    await promptly(
+      (async () => {
+        while (f.calls.filter((p) => p.includes("/translations/")).length < 4)
+          await new Promise((r) => setTimeout(r, 0));
+      })(),
+    );
     assert.equal(f.calls.filter((p) => p.includes("/translations/")).length, 4);
     f.names.resolve();
     await f.waitForTvdbSeasonNames(order);
@@ -432,22 +484,58 @@ function specialPanelRows(f, ordering) {
 }
 
 test("a failed middle TVDB page is never published or persisted as a complete catalog", async () => {
-  const f = fixture({ episodePage(url) {
-    const page = Number(url.searchParams.get("page"));
-    return page === 0
-      ? { ok: true, status: 200, json: async () => ({ data: { episodes: Array.from({ length: 500 }, (_, i) => ({ id: i + 1, number: i + 1, seasonNumber: 1, name: "Title" })) } }) }
-      : { ok: false, status: 503 };
-  } });
+  const f = fixture({
+    episodePage(url) {
+      const page = Number(url.searchParams.get("page"));
+      return page === 0
+        ? {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: {
+                episodes: Array.from({ length: 500 }, (_, i) => ({
+                  id: i + 1,
+                  number: i + 1,
+                  seasonNumber: 1,
+                  name: "Title",
+                })),
+              },
+            }),
+          }
+        : { ok: false, status: 503 };
+    },
+  });
   assert.equal(await f.fetchTvdbOrderBySeriesId("", 1, "aired", "eng"), null);
-  assert.equal([...f.storage.keys()].filter((key) => /^v1:tvdb-(?:order|episodes):/.test(key)).length, 0);
+  assert.equal(
+    [...f.storage.keys()].filter((key) => /^v1:tvdb-(?:order|episodes):/.test(key)).length,
+    0,
+  );
 });
 
 test("reaching the TVDB pagination safety cap fails instead of caching a truncated catalog", async () => {
-  const f = fixture({ episodePage() {
-    return { ok: true, status: 200, json: async () => ({ data: { episodes: Array.from({ length: 500 }, (_, i) => ({ id: i + 1, number: i + 1, seasonNumber: 1, name: "Title" })) } }) };
-  } });
+  const f = fixture({
+    episodePage() {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: {
+            episodes: Array.from({ length: 500 }, (_, i) => ({
+              id: i + 1,
+              number: i + 1,
+              seasonNumber: 1,
+              name: "Title",
+            })),
+          },
+        }),
+      };
+    },
+  });
   await assert.rejects(f.tvdb.tvdbEpisodesByType("", 1, "default"), /unavailable/);
-  assert.equal([...f.storage.keys()].filter((key) => key.startsWith("v1:tvdb-episodes:")).length, 0);
+  assert.equal(
+    [...f.storage.keys()].filter((key) => key.startsWith("v1:tvdb-episodes:")).length,
+    0,
+  );
 });
 
 test("fresh and cached proxy orders do not give missing special stills another special's image", async () => {

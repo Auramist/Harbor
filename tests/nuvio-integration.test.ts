@@ -127,9 +127,7 @@ test("Issue 2: Library cache, queues, cursors, and tombstones are strictly scope
   ]);
   writeNuvioCursor(1, 42);
   recordTombstone(1, "tt002", "movie");
-  writePendingUpserts(1, [
-    { content_id: "tt003", content_type: "movie", title: "Pending A" },
-  ]);
+  writePendingUpserts(1, [{ content_id: "tt003", content_type: "movie", title: "Pending A" }]);
 
   const itemsA = readCachedNuvioLibrary(1);
   assert.equal(itemsA.length, 1);
@@ -203,7 +201,13 @@ test("Issue 3: PIN cache is account-scoped and purged on signout", async () => {
     },
     profiles: [
       { id: "pb1", user_id: "user-bbb-222", profile_index: 1, name: "User B Main" },
-      { id: "pb2", user_id: "user-bbb-222", profile_index: 2, name: "User B Kid", pin_enabled: true },
+      {
+        id: "pb2",
+        user_id: "user-bbb-222",
+        profile_index: 2,
+        name: "User B Kid",
+        pin_enabled: true,
+      },
     ],
     activeProfileIndex: 1,
     lastSyncedAt: Date.now(),
@@ -211,7 +215,11 @@ test("Issue 3: PIN cache is account-scoped and purged on signout", async () => {
 
   // User B profile 2 must NOT be unlocked by User A's PIN
   const unlockedLocallyB = await verifyNuvioPinLocally(2, "1234");
-  assert.equal(unlockedLocallyB, false, "User B's profile 2 must not be unlocked with User A's cached PIN");
+  assert.equal(
+    unlockedLocallyB,
+    false,
+    "User B's profile 2 must not be unlocked with User A's cached PIN",
+  );
 
   // Sign out clears all PIN caches and session unlocks
   clearAllNuvioPinCaches();
@@ -288,10 +296,7 @@ test("Issue 5: Settings profile switch successfully unlocks and switches locked 
       token_type: "bearer",
       user: { id: "user-1" },
     },
-    profiles: [
-      { id: "p1", user_id: "user-1", profile_index: 1, name: "Main Profile" },
-      profile2,
-    ],
+    profiles: [{ id: "p1", user_id: "user-1", profile_index: 1, name: "Main Profile" }, profile2],
     activeProfileIndex: 1,
     lastSyncedAt: null,
   });
@@ -320,7 +325,10 @@ test("Review 2 Issue 1: Private resume strictly isolates owner writes, reads, an
   // 1. A write without explicit owner only enters shared KEY, never entering private scope
   saveResumeMs("tt100", 45000, 1, 1);
   const sharedRaw = mockStorage.get("harbor.resume");
-  assert.ok(sharedRaw && sharedRaw.includes("tt100|s1e1"), "Unowned write must enter shared resume");
+  assert.ok(
+    sharedRaw && sharedRaw.includes("tt100|s1e1"),
+    "Unowned write must enter shared resume",
+  );
   assert.equal(
     mockStorage.has("harbor.resume.private.v1.alice"),
     false,
@@ -330,7 +338,10 @@ test("Review 2 Issue 1: Private resume strictly isolates owner writes, reads, an
   // 2. An explicit owner write lands in both shared and private scopes
   saveResumeMs("tt101", 90000, 1, 1, undefined, undefined, undefined, "alice");
   const privateAlice = mockStorage.get("harbor.resume.private.v1.alice");
-  assert.ok(privateAlice && privateAlice.includes("tt101|s1e1"), "Owner write must enter private profile");
+  assert.ok(
+    privateAlice && privateAlice.includes("tt101|s1e1"),
+    "Owner write must enter private profile",
+  );
 
   // 3. Clear with acknowledged option clears only active private scope without deleting shared progress
   mockStorage.set(
@@ -360,7 +371,11 @@ test("Review 2 Issue 2: Nuvio watch progress and playback items are strictly sco
   mockStorage.clear();
 
   // User A writes watch progress & playback items
-  writeCachedWatchProgress(1, [{ content_id: "ttA", profile_id: 1, position_seconds: 120 } as any], "user-A");
+  writeCachedWatchProgress(
+    1,
+    [{ content_id: "ttA", profile_id: 1, position_seconds: 120 } as any],
+    "user-A",
+  );
   writeCachedNuvioPlaybackItems(1, [{ _id: "ttA", name: "Title A" } as any], "user-A");
 
   // User B reads their own slot 1
@@ -373,16 +388,19 @@ test("Review 2 Issue 2: Nuvio watch progress and playback items are strictly sco
   clearCachedWatchProgress();
   clearCachedPlaybackItems();
   for (const k of mockStorage.keys()) {
-    assert.ok(!k.startsWith("harbor.nuvio.watch_progress."), "Watch progress cache must be cleared");
-    assert.ok(!k.startsWith("harbor.nuvio.playback_items."), "Playback items cache must be cleared");
+    assert.ok(
+      !k.startsWith("harbor.nuvio.watch_progress."),
+      "Watch progress cache must be cleared",
+    );
+    assert.ok(
+      !k.startsWith("harbor.nuvio.playback_items."),
+      "Playback items cache must be cleared",
+    );
   }
 });
 
 test("Review 2 Issue 3: Switching to Nuvio provider dynamically updates Continue Watching", () => {
-  const cwSource = readFileSync(
-    new URL("../src/lib/feed/external-cw.ts", import.meta.url),
-    "utf8",
-  );
+  const cwSource = readFileSync(new URL("../src/lib/feed/external-cw.ts", import.meta.url), "utf8");
   assert.match(
     cwSource,
     /sourceMask\.nuvio\s*=\s*isNuvioProviderActive\(\)/,
@@ -404,7 +422,13 @@ test("Review 2 Issue 4: Failed library delete retains item in pending queue", as
   mockStorage.clear();
 
   saveNuvioState({
-    session: { access_token: "tok", refresh_token: "ref", expires_at: 9999999, token_type: "bearer", user: { id: "u-del" } },
+    session: {
+      access_token: "tok",
+      refresh_token: "ref",
+      expires_at: 9999999,
+      token_type: "bearer",
+      user: { id: "u-del" },
+    },
     profiles: [],
     activeProfileIndex: 1,
     lastSyncedAt: null,
@@ -415,11 +439,12 @@ test("Review 2 Issue 4: Failed library delete retains item in pending queue", as
 
   // Simulate both RPC and direct table DELETE failing with HTTP 500
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({
-    ok: false,
-    status: 500,
-    json: async () => ({ message: "Internal server error" }),
-  } as unknown as Response);
+  globalThis.fetch = async () =>
+    ({
+      ok: false,
+      status: 500,
+      json: async () => ({ message: "Internal server error" }),
+    }) as unknown as Response;
 
   try {
     const success = await flushNuvioLibraryMutations(1);
@@ -437,7 +462,13 @@ test("Review 2 Issue 5: In-flight library flush aborts if user switches accounts
   mockStorage.clear();
 
   saveNuvioState({
-    session: { access_token: "tok-A", refresh_token: "ref-A", expires_at: 9999999, token_type: "bearer", user: { id: "user-A" } },
+    session: {
+      access_token: "tok-A",
+      refresh_token: "ref-A",
+      expires_at: 9999999,
+      token_type: "bearer",
+      user: { id: "user-A" },
+    },
     profiles: [],
     activeProfileIndex: 1,
     lastSyncedAt: null,
@@ -451,7 +482,13 @@ test("Review 2 Issue 5: In-flight library flush aborts if user switches accounts
   globalThis.fetch = async (_url, init) => {
     // Switch to User B mid-flight
     saveNuvioState({
-      session: { access_token: "tok-B", refresh_token: "ref-B", expires_at: 9999999, token_type: "bearer", user: { id: "user-B" } },
+      session: {
+        access_token: "tok-B",
+        refresh_token: "ref-B",
+        expires_at: 9999999,
+        token_type: "bearer",
+        user: { id: "user-B" },
+      },
       profiles: [],
       activeProfileIndex: 1,
       lastSyncedAt: null,
@@ -466,7 +503,11 @@ test("Review 2 Issue 5: In-flight library flush aborts if user switches accounts
   try {
     const flushed = await flushNuvioLibraryMutations(1);
     assert.equal(flushed, false, "Flush must abort when account switches mid-flight");
-    assert.equal(requestsMadeWithB, 0, "User A's mutations must never be dispatched with User B's token");
+    assert.equal(
+      requestsMadeWithB,
+      0,
+      "User A's mutations must never be dispatched with User B's token",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -477,7 +518,13 @@ test("Review 2 Issue 6: Session refresh race guards against late 401 and late su
 
   // Scenario A: Late 401 must not wipe a newer login to the same account
   saveNuvioState({
-    session: { access_token: "tok-1", refresh_token: "ref-1", expires_at: 100, token_type: "bearer", user: { id: "u-same" } },
+    session: {
+      access_token: "tok-1",
+      refresh_token: "ref-1",
+      expires_at: 100,
+      token_type: "bearer",
+      user: { id: "u-same" },
+    },
     profiles: [],
     activeProfileIndex: 1,
     lastSyncedAt: null,
@@ -487,7 +534,13 @@ test("Review 2 Issue 6: Session refresh race guards against late 401 and late su
   globalThis.fetch = async () => {
     // While refresh is in flight, user logs in with newer credentials (ref-2)
     saveNuvioState({
-      session: { access_token: "tok-2", refresh_token: "ref-2", expires_at: 99999, token_type: "bearer", user: { id: "u-same" } },
+      session: {
+        access_token: "tok-2",
+        refresh_token: "ref-2",
+        expires_at: 99999,
+        token_type: "bearer",
+        user: { id: "u-same" },
+      },
       profiles: [],
       activeProfileIndex: 1,
       lastSyncedAt: null,
@@ -509,7 +562,13 @@ test("Review 2 Issue 6: Session refresh race guards against late 401 and late su
   globalThis.fetch = async () => {
     // User renewed with ref-3 while ref-2 was refreshing
     saveNuvioState({
-      session: { access_token: "tok-3", refresh_token: "ref-3", expires_at: 99999, token_type: "bearer", user: { id: "u-same" } },
+      session: {
+        access_token: "tok-3",
+        refresh_token: "ref-3",
+        expires_at: 99999,
+        token_type: "bearer",
+        user: { id: "u-same" },
+      },
       profiles: [],
       activeProfileIndex: 1,
       lastSyncedAt: null,
@@ -517,14 +576,22 @@ test("Review 2 Issue 6: Session refresh race guards against late 401 and late su
     return {
       ok: true,
       status: 200,
-      json: async () => ({ access_token: "stale-tok", refresh_token: "stale-ref", expires_in: 3600 }),
+      json: async () => ({
+        access_token: "stale-tok",
+        refresh_token: "stale-ref",
+        expires_in: 3600,
+      }),
     } as unknown as Response;
   };
 
   try {
     const res = await refreshNuvioSession();
     assert.equal(res, null, "Late success must be rejected when newer session exists");
-    assert.equal(loadNuvioState().session?.refresh_token, "ref-3", "Newer session token must not be overwritten");
+    assert.equal(
+      loadNuvioState().session?.refresh_token,
+      "ref-3",
+      "Newer session token must not be overwritten",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -539,21 +606,39 @@ test("Review 3 Issue 1: Local Continue Watching and resume entries are account-s
 
   // User A logs in
   saveNuvioState({
-    session: { access_token: "tok-A", refresh_token: "ref-A", expires_at: 9999999, token_type: "bearer", user: { id: "user-A" } },
+    session: {
+      access_token: "tok-A",
+      refresh_token: "ref-A",
+      expires_at: 9999999,
+      token_type: "bearer",
+      user: { id: "user-A" },
+    },
     profiles: [{ id: "p1", user_id: "user-A", profile_index: 1, name: "Profile 1" }],
     activeProfileIndex: 1,
     lastSyncedAt: Date.now(),
   });
 
-  saveLocalCw({
-    id: "tt-user-a-title",
-    type: "movie",
-    name: "User A Title",
-    positionMs: 300000,
-    durationMs: 3600000,
-    t: Date.now(),
-  }, "nuvio-1");
-  saveResumeMs("tt-user-a-title", 300000, undefined, undefined, undefined, 0.08, "nuvio", "nuvio-1");
+  saveLocalCw(
+    {
+      id: "tt-user-a-title",
+      type: "movie",
+      name: "User A Title",
+      positionMs: 300000,
+      durationMs: 3600000,
+      t: Date.now(),
+    },
+    "nuvio-1",
+  );
+  saveResumeMs(
+    "tt-user-a-title",
+    300000,
+    undefined,
+    undefined,
+    undefined,
+    0.08,
+    "nuvio",
+    "nuvio-1",
+  );
 
   const listA = listLocalCw(true, "nuvio-1");
   assert.equal(listA.length, 1);
@@ -561,7 +646,13 @@ test("Review 3 Issue 1: Local Continue Watching and resume entries are account-s
 
   // User B logs in
   saveNuvioState({
-    session: { access_token: "tok-B", refresh_token: "ref-B", expires_at: 9999999, token_type: "bearer", user: { id: "user-B" } },
+    session: {
+      access_token: "tok-B",
+      refresh_token: "ref-B",
+      expires_at: 9999999,
+      token_type: "bearer",
+      user: { id: "user-B" },
+    },
     profiles: [{ id: "pb1", user_id: "user-B", profile_index: 1, name: "Profile 1" }],
     activeProfileIndex: 1,
     lastSyncedAt: Date.now(),
@@ -584,7 +675,13 @@ test("Review 3 Issue 2: Library mutations queued during an in-flight flush are p
   mockStorage.clear();
 
   saveNuvioState({
-    session: { access_token: "tok", refresh_token: "ref", expires_at: Math.floor(Date.now() / 1000) + 3600, token_type: "bearer", user: { id: "u-flush" } },
+    session: {
+      access_token: "tok",
+      refresh_token: "ref",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      token_type: "bearer",
+      user: { id: "u-flush" },
+    },
     profiles: [],
     activeProfileIndex: 1,
     lastSyncedAt: null,
@@ -593,7 +690,11 @@ test("Review 3 Issue 2: Library mutations queued during an in-flight flush are p
   // 1. Initial pending delete item1
   writePendingDeletes(1, [{ content_id: "tt-del-1", content_type: "movie" }], "u-flush");
   // Initial pending upsert item1
-  writePendingUpserts(1, [{ content_id: "tt-up-1", content_type: "movie", name: "Movie 1" }], "u-flush");
+  writePendingUpserts(
+    1,
+    [{ content_id: "tt-up-1", content_type: "movie", name: "Movie 1" }],
+    "u-flush",
+  );
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url: any) => {
@@ -602,13 +703,21 @@ test("Review 3 Issue 2: Library mutations queued during an in-flight flush are p
     if (urlStr.includes("delete")) {
       const curDeletes = readPendingDeletes(1, "u-flush");
       if (!curDeletes.some((d) => d.content_id === "tt-del-2")) {
-        writePendingDeletes(1, [...curDeletes, { content_id: "tt-del-2", content_type: "movie" }], "u-flush");
+        writePendingDeletes(
+          1,
+          [...curDeletes, { content_id: "tt-del-2", content_type: "movie" }],
+          "u-flush",
+        );
       }
     }
     if (urlStr.includes("sync_push_library")) {
       const curUpserts = readPendingUpserts(1, "u-flush");
       if (!curUpserts.some((u) => u.content_id === "tt-up-2")) {
-        writePendingUpserts(1, [...curUpserts, { content_id: "tt-up-2", content_type: "movie", name: "Movie 2" }], "u-flush");
+        writePendingUpserts(
+          1,
+          [...curUpserts, { content_id: "tt-up-2", content_type: "movie", name: "Movie 2" }],
+          "u-flush",
+        );
       }
     }
 
@@ -635,31 +744,46 @@ test("Review 3 Issue 3: Playback deletion updates account-scoped cache key", asy
   mockStorage.clear();
 
   saveNuvioState({
-    session: { access_token: "tok", refresh_token: "ref", expires_at: Math.floor(Date.now() / 1000) + 3600, token_type: "bearer", user: { id: "user-acc-1" } },
+    session: {
+      access_token: "tok",
+      refresh_token: "ref",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      token_type: "bearer",
+      user: { id: "user-acc-1" },
+    },
     profiles: [{ id: "p1", user_id: "user-acc-1", profile_index: 1, name: "P1" }],
     activeProfileIndex: 1,
     lastSyncedAt: null,
   });
 
   // Seed watch progress & playback items in account-scoped cache
-  writeCachedWatchProgress(1, [
-    { content_id: "tt-keep", profile_id: 1, position_seconds: 120 } as any,
-    { content_id: "tt-del-target", profile_id: 1, position_seconds: 60 } as any,
-  ], "user-acc-1");
-  writeCachedNuvioPlaybackItems(1, [
-    { _id: "tt-keep", name: "Keep Movie" } as any,
-    { _id: "tt-del-target", name: "Delete Target" } as any,
-  ], "user-acc-1");
+  writeCachedWatchProgress(
+    1,
+    [
+      { content_id: "tt-keep", profile_id: 1, position_seconds: 120 } as any,
+      { content_id: "tt-del-target", profile_id: 1, position_seconds: 60 } as any,
+    ],
+    "user-acc-1",
+  );
+  writeCachedNuvioPlaybackItems(
+    1,
+    [
+      { _id: "tt-keep", name: "Keep Movie" } as any,
+      { _id: "tt-del-target", name: "Delete Target" } as any,
+    ],
+    "user-acc-1",
+  );
 
   // Also seed legacy slot key to verify it is wiped
   mockStorage.set("harbor.nuvio.playback_items.slot.1", JSON.stringify([{ _id: "tt-del-target" }]));
 
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({
-    ok: true,
-    status: 200,
-    json: async () => ([]),
-  } as unknown as Response);
+  globalThis.fetch = async () =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => [],
+    }) as unknown as Response;
 
   try {
     await deleteWatchProgressFromNuvio(1, "tt-del-target");
@@ -685,7 +809,6 @@ test("Review 3 Issue 3: Playback deletion updates account-scoped cache key", asy
   }
 });
 
-
 // ============================================================================
 // Review 4 Follow-Up Regression Checks (2 Critical Production Gates)
 // ============================================================================
@@ -705,9 +828,7 @@ test("Review 4 Issue 1: Player resume autosave uses effective Nuvio profile, iso
       token_type: "bearer",
       user: { id: "user-A" },
     },
-    profiles: [
-      { id: "p1", user_id: "user-A", profile_index: 1, name: "Profile 1" },
-    ],
+    profiles: [{ id: "p1", user_id: "user-A", profile_index: 1, name: "Profile 1" }],
     activeProfileIndex: 1,
     lastSyncedAt: Date.now(),
   });
@@ -749,9 +870,7 @@ test("Review 4 Issue 1: Player resume autosave uses effective Nuvio profile, iso
       token_type: "bearer",
       user: { id: "user-B" },
     },
-    profiles: [
-      { id: "pb1", user_id: "user-B", profile_index: 1, name: "Profile B1" },
-    ],
+    profiles: [{ id: "pb1", user_id: "user-B", profile_index: 1, name: "Profile B1" }],
     activeProfileIndex: 1,
     lastSyncedAt: Date.now(),
   });
@@ -815,7 +934,11 @@ test("Review 4 Issue 2: In-flight library update to the same title preserves the
 
     // The pending queue must NOT be empty: "New Title" must be preserved!
     const remaining = readPendingUpserts(1, "u-same-test");
-    assert.equal(remaining.length, 1, "Newer update to same title must be preserved in pending queue");
+    assert.equal(
+      remaining.length,
+      1,
+      "Newer update to same title must be preserved in pending queue",
+    );
     assert.equal(remaining[0].name, "New Title");
     assert.equal(remaining[0].added_at, 2000);
   } finally {
@@ -885,7 +1008,11 @@ test("Review 5 Issue 1: In-flight watch progress and library pulls discard respo
     };
 
     const progressResult = await pullWatchProgressFromNuvio(1);
-    assert.deepEqual(progressResult, [], "In-flight watch progress pull must return empty array when account changed");
+    assert.deepEqual(
+      progressResult,
+      [],
+      "In-flight watch progress pull must return empty array when account changed",
+    );
 
     // Account B caches must NOT contain Account A's watch progress or playback items
     const accBProgress = readCachedWatchProgress(1, "user-account-b");
@@ -895,7 +1022,11 @@ test("Review 5 Issue 1: In-flight watch progress and library pulls discard respo
     assert.equal(accBPlayback.length, 0, "Account B playback items cache must remain empty");
 
     const accBCw = listLocalCw(true, "nuvio-1");
-    assert.equal(accBCw.some((c) => c.id === "tt-user-a-secret"), false, "Local CW must not contain Account A title");
+    assert.equal(
+      accBCw.some((c) => c.id === "tt-user-a-secret"),
+      false,
+      "Local CW must not contain Account A title",
+    );
 
     // Part 2: Library snapshot pull under Account A; Account switches to Account B while in-flight
     // Reset back to Account A
@@ -942,7 +1073,11 @@ test("Review 5 Issue 1: In-flight watch progress and library pulls discard respo
     };
 
     const libraryResult = await pullNuvioLibrarySnapshot(1);
-    assert.deepEqual(libraryResult, [], "In-flight library snapshot pull must discard responses when account changed");
+    assert.deepEqual(
+      libraryResult,
+      [],
+      "In-flight library snapshot pull must discard responses when account changed",
+    );
 
     // Account B caches must NOT contain Account A's library items or cursor
     const accBLibrary = readCachedNuvioLibrary(1, "user-account-b");
@@ -1172,7 +1307,6 @@ test("Nuvio limited watch-progress response preserves cached episodes beyond the
     globalThis.fetch = originalFetch;
   }
 });
-
 
 test("simultaneous detail and home watched reconciliation shares one cloud snapshot", async () => {
   mockStorage.clear();

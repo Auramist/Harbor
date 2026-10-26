@@ -821,9 +821,7 @@ export function DetailView({
         .then((progressItems) => {
           if (cancelled) return;
           const matches = progressItems.filter(
-            (p) =>
-              p.content_id === meta.id ||
-              (detail?.imdbId && p.content_id === detail.imdbId),
+            (p) => p.content_id === meta.id || (detail?.imdbId && p.content_id === detail.imdbId),
           );
           if (matches.length > 0) {
             matches.sort((a, b) => {
@@ -849,8 +847,17 @@ export function DetailView({
               const isFinished = latest.progress_seconds > dur * 0.9;
               if (isFinished) {
                 const subsequent = matches.find((m) => {
-                  if (m.season == null || m.episode == null || latest.season == null || latest.episode == null) return false;
-                  return m.season > latest.season || (m.season === latest.season && m.episode > latest.episode);
+                  if (
+                    m.season == null ||
+                    m.episode == null ||
+                    latest.season == null ||
+                    latest.episode == null
+                  )
+                    return false;
+                  return (
+                    m.season > latest.season ||
+                    (m.season === latest.season && m.episode > latest.episode)
+                  );
                 });
                 if (subsequent) {
                   latest = subsequent;
@@ -1520,7 +1527,16 @@ export function DetailView({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seriesWatchedVer, authKey, isSeries, isAnime, cinemetaFull?.videos, detail?.imdbId, meta.id, settings.accountProvider]);
+  }, [
+    seriesWatchedVer,
+    authKey,
+    isSeries,
+    isAnime,
+    cinemetaFull?.videos,
+    detail?.imdbId,
+    meta.id,
+    settings.accountProvider,
+  ]);
 
   const upcoming = !loading && isTitleUpcoming(detail, meta);
   const currentFranchiseId = animeCanonicalId ?? meta.id;
@@ -1755,10 +1771,23 @@ export function DetailView({
           const isFinished = matched.progress_seconds > dur * 0.9;
           if (isFinished) {
             const subsequent = matches.find((m) => {
-              if (m.season == null || m.episode == null || matched.season == null || matched.episode == null) return false;
-              return m.season > matched.season || (m.season === matched.season && m.episode > matched.episode);
+              if (
+                m.season == null ||
+                m.episode == null ||
+                matched.season == null ||
+                matched.episode == null
+              )
+                return false;
+              return (
+                m.season > matched.season ||
+                (m.season === matched.season && m.episode > matched.episode)
+              );
             });
-            if (subsequent && typeof subsequent.season === "number" && typeof subsequent.episode === "number") {
+            if (
+              subsequent &&
+              typeof subsequent.season === "number" &&
+              typeof subsequent.episode === "number"
+            ) {
               matched = subsequent;
             } else {
               matched = { ...matched, episode: matched.episode + 1 };
@@ -2131,7 +2160,11 @@ export function DetailView({
                           releaseInfo: meta.releaseInfo,
                           imdbRating: meta.imdbRating,
                           genres: meta.genres,
-                          posterShape: ((meta as unknown as Record<string, unknown>).posterShape as "POSTER" | "SQUARE" | "LANDSCAPE") || "POSTER",
+                          posterShape:
+                            ((meta as unknown as Record<string, unknown>).posterShape as
+                              | "POSTER"
+                              | "SQUARE"
+                              | "LANDSCAPE") || "POSTER",
                         })
                       }
                       className={`flex h-12 items-center gap-2.5 whitespace-nowrap rounded-full px-6 text-[15px] font-medium transition-[transform,background-color] duration-200 active:scale-[0.98] ${
@@ -2214,7 +2247,11 @@ export function DetailView({
                         releaseInfo: meta.releaseInfo,
                         imdbRating: meta.imdbRating,
                         genres: meta.genres,
-                        posterShape: ((meta as unknown as Record<string, unknown>).posterShape as "POSTER" | "SQUARE" | "LANDSCAPE") || "POSTER",
+                        posterShape:
+                          ((meta as unknown as Record<string, unknown>).posterShape as
+                            | "POSTER"
+                            | "SQUARE"
+                            | "LANDSCAPE") || "POSTER",
                       })
                     }
                     simkl={{
@@ -2366,32 +2403,30 @@ export function DetailView({
             <EpisodeGridSkeleton />
           ))}
 
-        {!liveContext &&
-          isAnime &&
-          (animeEpisodes.length > 1 || franchise.length > 1) && (
-            <FadeInUp>
-              <AnimeEpisodes
-                meta={playMeta}
-                episodes={animeEpisodes}
-                franchise={franchise}
-                currentId={currentFranchiseId}
-                scrollRef={scrollRef}
-                trackId={animeCanonicalId ?? undefined}
-                episodeHint={episodeHint}
-                imdbId={
-                  detail?.imdbId ??
-                  animeEpisodes.find((e) => e.imdbId)?.imdbId ??
-                  (meta.id.startsWith("tt") ? meta.id : null)
-                }
-                onSeasonArt={handleSeasonArt}
-                localizedOverview={localizedAnimeOverview}
-                seasonOverviews={detail?.seasonOverviews}
-                tmdbTvId={detail?.tmdbTvId}
-                tmdbSeasons={detail?.seasons}
-                seasonPosters={detail?.seasonPosters}
-              />
-            </FadeInUp>
-          )}
+        {!liveContext && isAnime && (animeEpisodes.length > 1 || franchise.length > 1) && (
+          <FadeInUp>
+            <AnimeEpisodes
+              meta={playMeta}
+              episodes={animeEpisodes}
+              franchise={franchise}
+              currentId={currentFranchiseId}
+              scrollRef={scrollRef}
+              trackId={animeCanonicalId ?? undefined}
+              episodeHint={episodeHint}
+              imdbId={
+                detail?.imdbId ??
+                animeEpisodes.find((e) => e.imdbId)?.imdbId ??
+                (meta.id.startsWith("tt") ? meta.id : null)
+              }
+              onSeasonArt={handleSeasonArt}
+              localizedOverview={localizedAnimeOverview}
+              seasonOverviews={detail?.seasonOverviews}
+              tmdbTvId={detail?.tmdbTvId}
+              tmdbSeasons={detail?.seasons}
+              seasonPosters={detail?.seasonPosters}
+            />
+          </FadeInUp>
+        )}
 
         {!liveContext && tmdbEpisodeList && !isAnime && isSeries && (
           <FadeInUp>

@@ -165,13 +165,21 @@ function proxyImage(
       });
       if (!resp.ok) throw new Error(`status ${resp.status}`);
       if (generation !== cacheGeneration) return null;
-      if (persistent && typeof window !== "undefined") window.__harborProfiler?.mark("image-cache", { result: resp.headers?.["x-harbor-image-cache"] ?? "bypass" });
+      if (persistent && typeof window !== "undefined")
+        window.__harborProfiler?.mark("image-cache", {
+          result: resp.headers?.["x-harbor-image-cache"] ?? "bypass",
+        });
       const type = resp.headers?.["content-type"] || resp.contentType || "image/jpeg";
       if (type && !type.startsWith("image/")) throw new Error(`type ${type}`);
       const blob = new Blob([base64ToBytes(resp.body)], { type });
       const control = resp.headers?.["cache-control"] ?? "";
-      const age = resp.headers?.["x-harbor-image-max-age"] ?? /(?:^|,)\s*max-age="?(\d+)/i.exec(control)?.[1];
-      const ttl = /(?:^|,)\s*(?:no-store|no-cache|private)(?:,|$)/i.test(control) ? 0 : age !== undefined ? Number(age) * 1000 : undefined;
+      const age =
+        resp.headers?.["x-harbor-image-max-age"] ?? /(?:^|,)\s*max-age="?(\d+)/i.exec(control)?.[1];
+      const ttl = /(?:^|,)\s*(?:no-store|no-cache|private)(?:,|$)/i.test(control)
+        ? 0
+        : age !== undefined
+          ? Number(age) * 1000
+          : undefined;
       const created = blobCache.set(key, blob, Number.isFinite(ttl) ? ttl : undefined);
       return created;
     } catch {
@@ -187,7 +195,8 @@ function proxyImage(
   return p;
 }
 
-const cacheKeyFor = (url: string, thumbWidthPx?: number): string => `${thumbWidthPx ?? 0}\n${suwayomiAuthFor(url) ?? ""}\n${url}`;
+const cacheKeyFor = (url: string, thumbWidthPx?: number): string =>
+  `${thumbWidthPx ?? 0}\n${suwayomiAuthFor(url) ?? ""}\n${url}`;
 
 export function useProxiedImageSrc(
   url: string | undefined,
@@ -202,13 +211,19 @@ export function useProxiedImageSrc(
   const { settings } = useSettings();
   const persistent = opts?.persistent === true;
   const thumbWidthPx =
-    opts?.originalSize || settings.posterQuality === "max" ? undefined : settings.posterQuality === "high" ? 600 : 400;
+    opts?.originalSize || settings.posterQuality === "max"
+      ? undefined
+      : settings.posterQuality === "high"
+        ? 600
+        : 400;
   const imageKey = cacheKeyFor(url ?? "", thumbWidthPx);
   const [blob, setBlob] = useState<{ key: string; src: string } | undefined>(() => {
     const cached = url && need ? blobCache.get(imageKey) : undefined;
     return cached ? { key: imageKey, src: cached.src } : undefined;
   });
-  const [failed, setFailed] = useState(() => (url && need && isDead(imageKey) ? imageKey : undefined));
+  const [failed, setFailed] = useState(() =>
+    url && need && isDead(imageKey) ? imageKey : undefined,
+  );
   useEffect(() => {
     if (!url || !need || opts?.enabled === false) {
       setFailed(undefined);
@@ -218,7 +233,11 @@ export function useProxiedImageSrc(
     const cached = blobCache.get(cacheKeyFor(url, thumbWidthPx));
     if (cached) {
       setFailed(undefined);
-      setBlob((previous) => previous?.key === imageKey && previous.src === cached.src ? previous : { key: imageKey, src: cached.src });
+      setBlob((previous) =>
+        previous?.key === imageKey && previous.src === cached.src
+          ? previous
+          : { key: imageKey, src: cached.src },
+      );
       return blobCache.retain(cached);
     }
     if (isDead(imageKey)) {

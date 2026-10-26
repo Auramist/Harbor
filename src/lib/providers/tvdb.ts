@@ -3,7 +3,15 @@ import { registerCache } from "@/lib/memory-profiler";
 import { safeFetch as tauriFetch } from "@/lib/safe-fetch";
 import { HARBOR_TVDB_BASE } from "@/lib/config/endpoints";
 import { episodeTextLanguage } from "@/lib/episode-text-language";
-import { cachedMedia, saveMedia, episodeCacheTtl, metadataCacheTtl, MEDIA_TTL, onMediaCacheClear, mediaCacheGeneration } from "@/lib/media-cache";
+import {
+  cachedMedia,
+  saveMedia,
+  episodeCacheTtl,
+  metadataCacheTtl,
+  MEDIA_TTL,
+  onMediaCacheClear,
+  mediaCacheGeneration,
+} from "@/lib/media-cache";
 
 const BASE = "https://api4.thetvdb.com/v4";
 const PROXY_V4 = `${HARBOR_TVDB_BASE}/api/tvdb/v4`;
@@ -137,7 +145,10 @@ const RESPONSE_CACHE_MAX = 200;
 const RESPONSE_TTL_MS = 10 * 60 * 1000;
 const responseCache = new Map<string, { t: number; v: unknown }>();
 const responseInflight = new Map<string, Promise<unknown>>();
-onMediaCacheClear(() => { responseCache.clear(); responseInflight.clear(); });
+onMediaCacheClear(() => {
+  responseCache.clear();
+  responseInflight.clear();
+});
 
 registerCache("tvdb:response", () => responseCache.size);
 
@@ -147,7 +158,12 @@ async function getJson<T>(apiKey: string, path: string): Promise<T | null> {
   return cachedMedia("tvdb-resource", [apiKey, path], () => fetchJson<T>(apiKey, path), {
     ttl: (value) => {
       if (!/\/seasons\//.test(path)) return metadataCacheTtl(value);
-      const season = value as { image?: string; artwork?: unknown[]; name?: string; overview?: string };
+      const season = value as {
+        image?: string;
+        artwork?: unknown[];
+        name?: string;
+        overview?: string;
+      };
       const populated = path.includes("/translations/")
         ? !!(season.name?.trim() || season.overview?.trim())
         : !!season.image || (Array.isArray(season.artwork) && season.artwork.length > 0);
@@ -197,7 +213,8 @@ async function fetchJson<T>(apiKey: string, path: string): Promise<T | null> {
         const j = (await res.json()) as { data?: T };
         const data = (j?.data ?? null) as T | null;
         if (data !== null)
-          if (generation === mediaCacheGeneration()) lruSet(responseCache, key, { t: Date.now(), v: data }, RESPONSE_CACHE_MAX);
+          if (generation === mediaCacheGeneration())
+            lruSet(responseCache, key, { t: Date.now(), v: data }, RESPONSE_CACHE_MAX);
         return data;
       } catch {
         if (attempt === 0) {
@@ -612,11 +629,23 @@ export async function tvdbEpisodesByType(
 ): Promise<TvdbEpisode[]> {
   if (!seriesId) return [];
   const generation = mediaCacheGeneration();
-  const episodes = await cachedMedia("tvdb-episodes", [apiKey, seriesId, seasonType, lang ?? "und"],
-    () => fetchEpisodesByType(apiKey, seriesId, seasonType, lang), {
-      ttl: (rows) => rows.length ? episodeCacheTtl(rows) : 60_000,
-      valid: (rows) => Array.isArray(rows) && rows.every((row) => row && Number.isFinite(row.id) && Number.isFinite(row.number) && Number.isFinite(row.seasonNumber)),
-    });
+  const episodes = await cachedMedia(
+    "tvdb-episodes",
+    [apiKey, seriesId, seasonType, lang ?? "und"],
+    () => fetchEpisodesByType(apiKey, seriesId, seasonType, lang),
+    {
+      ttl: (rows) => (rows.length ? episodeCacheTtl(rows) : 60_000),
+      valid: (rows) =>
+        Array.isArray(rows) &&
+        rows.every(
+          (row) =>
+            row &&
+            Number.isFinite(row.id) &&
+            Number.isFinite(row.number) &&
+            Number.isFinite(row.seasonNumber),
+        ),
+    },
+  );
   if (!episodes) throw new Error("TVDB episode catalog unavailable");
   if (!lang)
     void saveMedia(
@@ -654,7 +683,10 @@ async function fetchEpisodesByType(
         id: e.id,
         number: e.number,
         seasonNumber: typeof e.seasonNumber === "number" ? e.seasonNumber : 0,
-        absoluteNumber: typeof e.absoluteNumber === "number" && Number.isFinite(e.absoluteNumber) ? e.absoluteNumber : undefined,
+        absoluteNumber:
+          typeof e.absoluteNumber === "number" && Number.isFinite(e.absoluteNumber)
+            ? e.absoluteNumber
+            : undefined,
         name: e.name,
         overview: e.overview,
         nameLanguage: lang
@@ -685,10 +717,17 @@ export async function tvdbOrderTypeHasEpisodes(
       : seasonType === "tvdbabsolute"
         ? "absolute"
         : seasonType;
-  return (await cachedMedia("tvdb-availability", [apiKey, seriesId, slug], async () => {
-    const data = await getJson<any>(apiKey, `/series/${seriesId}/episodes/${slug}?page=0`);
-    return Array.isArray(data?.episodes) ? data.episodes.length > 0 : null;
-  }, { ttl: (available) => available ? MEDIA_TTL.episodes : 60_000 })) ?? false;
+  return (
+    (await cachedMedia(
+      "tvdb-availability",
+      [apiKey, seriesId, slug],
+      async () => {
+        const data = await getJson<any>(apiKey, `/series/${seriesId}/episodes/${slug}?page=0`);
+        return Array.isArray(data?.episodes) ? data.episodes.length > 0 : null;
+      },
+      { ttl: (available) => (available ? MEDIA_TTL.episodes : 60_000) },
+    )) ?? false
+  );
 }
 
 export async function tvdbEpisodesAbsolute(

@@ -12,11 +12,7 @@ import {
   nuvioFetch,
   saveNuvioState,
 } from "./nuvio-client";
-import type {
-  NuvioAddonItem,
-  NuvioWatchProgress,
-  NuvioWatchedItem,
-} from "./nuvio-types";
+import type { NuvioAddonItem, NuvioWatchProgress, NuvioWatchedItem } from "./nuvio-types";
 import { reconcileNuvioWatchedFlags } from "@/lib/watched-flag";
 import { reconcileNuvioMovieWatched } from "@/lib/movie-watched";
 import { reconcileNuvioWatchedEpisodes } from "@/lib/manual-watched";
@@ -703,10 +699,7 @@ export function writeCachedWatchProgress(
   accountId?: string,
 ): void {
   try {
-    localStorage.setItem(
-      getWatchProgressKey(slot, accountId),
-      JSON.stringify(items),
-    );
+    localStorage.setItem(getWatchProgressKey(slot, accountId), JSON.stringify(items));
   } catch {}
 }
 
@@ -749,9 +742,7 @@ export async function pushWatchProgressToNuvio(
   const durSec = Math.max(0, Math.round(durationSeconds));
 
   const progressKey =
-    season != null && episode != null
-      ? `${contentId}_s${season}e${episode}`
-      : contentId;
+    season != null && episode != null ? `${contentId}_s${season}e${episode}` : contentId;
 
   const nowEpoch = Date.now();
   const title = meta?.name || meta?.title || undefined;
@@ -798,8 +789,8 @@ export async function pushWatchProgressToNuvio(
         id: contentId,
         type: season != null && episode != null ? "series" : "movie",
         name: title || existing?.name || existing?.title || contentId,
-        poster: (poster || existing?.poster) || undefined,
-        background: (background || existing?.background) || undefined,
+        poster: poster || existing?.poster || undefined,
+        background: background || existing?.background || undefined,
         season: season ?? undefined,
         episode: episode ?? undefined,
         positionMs: progSec * 1000,
@@ -1076,9 +1067,11 @@ export function reconcileNuvioWatched(harborProfileId?: string | number): Promis
   if (existing) return existing;
   const work = reconcileNuvioWatchedOnce(slot);
   watchedReconcileInflight.set(key, work);
-  void work.finally(() => {
-    if (watchedReconcileInflight.get(key) === work) watchedReconcileInflight.delete(key);
-  }).catch(() => {});
+  void work
+    .finally(() => {
+      if (watchedReconcileInflight.get(key) === work) watchedReconcileInflight.delete(key);
+    })
+    .catch(() => {});
   return work;
 }
 
@@ -1434,8 +1427,7 @@ async function pullWatchProgressOnce(
   const rpcCoordinates = new Set((rpcRows ?? []).map((row) => coordinate(row as NuvioCoordinate)));
   const needsConfirmation = Object.values(readPending(slot, accountId)).some(
     (change) =>
-      change.kind === "progress" &&
-      (change.deleted || !rpcCoordinates.has(coordinate(change.row))),
+      change.kind === "progress" && (change.deleted || !rpcCoordinates.has(coordinate(change.row))),
   );
   const fullSyncKey = `${accountId}:${slot}`;
   const lastFullSync = lastFullSyncAt.get(fullSyncKey) ?? 0;
@@ -1591,9 +1583,7 @@ async function pullWatchProgressOnce(
  * Pulls addons for the specified profile from Nuvio.
  * If uses_primary_addons is enabled on this profile, pulls profile 1's addons.
  */
-export async function pullAddonsFromNuvio(
-  harborProfileId: string,
-): Promise<NuvioAddonItem[]> {
+export async function pullAddonsFromNuvio(harborProfileId: string): Promise<NuvioAddonItem[]> {
   if (!isNuvioSignedIn()) return [];
 
   let profileIndex = resolveNuvioProfileIndex(harborProfileId);
@@ -1644,7 +1634,9 @@ export async function pushAddonsToNuvio(
     });
 
     if (res.ok) {
-      console.info(`[nuvio-sync] addons pushed via RPC for profile ${profileIndex} (${addons.length} addons)`);
+      console.info(
+        `[nuvio-sync] addons pushed via RPC for profile ${profileIndex} (${addons.length} addons)`,
+      );
       return true;
     }
     return false;
