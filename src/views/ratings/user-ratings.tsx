@@ -74,7 +74,9 @@ export function UserRatings({
   const cursorRef = useRef<string | undefined>(undefined);
   const seen = useRef<string | null>(null);
   const request = useRef<RatingsRequest | null>(null);
-  const editVersions = useRef(new Map<string, number>());
+  // Keep the lock above RatingRow so switching tabs cannot start another save for the same item.
+  const pendingSaves = useRef(new Set<string>());
+  const [savingKeys, setSavingKeys] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -264,37 +266,38 @@ export function UserRatings({
     async (r: PublicRating, score: number, review?: string): Promise<boolean> => {
       const nextReview = review?.trim() || undefined;
       if (score === r.score && nextReview === r.review) return true;
-      const previous = { score: r.score, review: r.review };
-      // Every save takes a new version for its rating, and only the newest one may write the
-      // row back: a slow failure must not undo an edit that has already landed.
-      const version = (editVersions.current.get(r.itemKey) ?? 0) + 1;
-      editVersions.current.set(r.itemKey, version);
-      setItems((list) =>
-        list.map((x) => (x.itemKey === r.itemKey ? { ...x, score, review: nextReview } : x)),
-      );
+      const key = r.mediaType + ":" + r.itemKey;
+      // A row can be unmounted by switching tabs or changing filters mid-save. Lock at the
+      // modal level, rather than in RatingRow, to prevent overlapping writes across tabs.
+      if (pendingSaves.current.has(key)) return false;
+      pendingSaves.current.add(key);
+      setSavingKeys((keys) => new Set([...keys, key]));
       try {
         await rate(
           { itemKey: r.itemKey, mediaType: r.mediaType, title: r.title, poster: r.posterUrl },
           score,
           { review: nextReview, spoiler: r.spoiler },
         );
+        // Do not optimistically change the filtered rows: clearing a review while the
+        // "With review" filter is selected would unmount its editor before errors can
+        // be displayed and the draft retained. Commit the row only after a successful save.
+        setItems((list) =>
+          list.map((x) =>
+            x.mediaType === r.mediaType && x.itemKey === r.itemKey
+              ? { ...x, score, review: nextReview }
+              : x,
+          ),
+        );
         return true;
       } catch {
-        // A rejected edit must not leave the row claiming a rating the server never took,
-        // and a stale rejection must leave the newer save's value alone.
-        if (
-          editVersions.current.get(r.itemKey) === version &&
-          !request.current?.controller.signal.aborted
-        ) {
-          setItems((list) =>
-            list.map((x) =>
-              x.itemKey === r.itemKey
-                ? { ...x, score: previous.score, review: previous.review }
-                : x,
-            ),
-          );
-        }
         return false;
+      } finally {
+        pendingSaves.current.delete(key);
+        setSavingKeys((keys) => {
+          const next = new Set(keys);
+          next.delete(key);
+          return next;
+        });
       }
     },
     [],
@@ -430,6 +433,7 @@ export function UserRatings({
                   r={r}
                   onOpenMeta={onOpenMeta}
                   onRate={isOwner ? changeRating : undefined}
+                  pendingSave={savingKeys.has(`${r.mediaType}:${r.itemKey}`)}
                 />
               ))}
               {loadingAll ? (
@@ -477,10 +481,12 @@ function RatingRow({
   r,
   onOpenMeta,
   onRate,
+  pendingSave = false,
 }: {
   r: PublicRating;
   onOpenMeta?: (metaId: string, kind?: string, hint?: { name?: string; poster?: string }) => void;
   onRate?: (r: PublicRating, score: number, review?: string) => Promise<boolean> | void;
+  pendingSave?: boolean;
 }) {
   const t = useT();
   const [revealed, setRevealed] = useState(false);
@@ -561,7 +567,7 @@ function RatingRow({
               <button
                 type="button"
                 onClick={async () => {
-                  if (!onRate || saving) return;
+                  if (!onRate || saving || pendingSave) return;
                   setSaving(true);
                   setSaveError(false);
                   try {
@@ -578,7 +584,9 @@ function RatingRow({
                   }
                 }}
                 disabled={
-                  saving || (draftScore === r.score && draftReview.trim() === (r.review ?? ""))
+                  saving ||
+                  pendingSave ||
+                  (draftScore === r.score && draftReview.trim() === (r.review ?? ""))
                 }
                 className="inline-flex h-9 items-center justify-center rounded-full bg-ink px-5 text-[13px] font-semibold text-canvas transition-transform hover:scale-[1.01] active:scale-[0.98] disabled:opacity-40"
               >
@@ -612,13 +620,15 @@ function RatingRow({
               <button
                 type="button"
                 onClick={() => {
+                  if (pendingSave) return;
                   setDraftScore(r.score);
                   setDraftReview(r.review ?? "");
                   setEditing(true);
                 }}
-                className="rounded-full border border-edge px-2.5 py-0.5 text-[11.5px] font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
+                disabled={pendingSave}
+                className="rounded-full border border-edge px-2.5 py-0.5 text-[11.5px] font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink disabled:opacity-40"
               >
-                {t("Edit")}
+                {pendingSave ? t("Saving…") : t("Edit")}
               </button>
             )}
           </div>

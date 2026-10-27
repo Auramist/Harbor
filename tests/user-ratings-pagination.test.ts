@@ -59,7 +59,7 @@ function ratingsHarness(options: { failRate?: boolean; deferRates?: boolean } = 
   const react = {
     useState(initial: any) {
       const i = si++;
-      if (!(i in states)) states[i] = initial;
+      if (!(i in states)) states[i] = typeof initial === "function" ? initial() : initial;
       return [
         states[i],
         (value: any) => {
@@ -560,25 +560,37 @@ test("ordering holds the list until every page is loaded so the order never chur
   assert.deepEqual(h.ids(), ["b", "c", "a"], "the settled order is shown once");
 });
 
-test("a stale failed rating save cannot roll back a newer successful save", async () => {
+test("a pending save stays locked across rating tab switches", async () => {
   const h = ratingsHarness({ deferRates: true });
-  await h.resolve(0, page(["alpha"]));
+  await h.resolve(0, page(["alpha"], undefined, counts, [8], ["original"]));
   h.render({ isOwner: true });
 
-  const older = h.startSubmitRow("alpha", 4, "older draft");
-  assert.deepEqual(h.rates()[0], { itemKey: "alpha", score: 4, review: "older draft" });
-  const newer = h.startSubmitRow("alpha", 6, "newer draft");
-  assert.deepEqual(h.rates()[1], { itemKey: "alpha", score: 6, review: "newer draft" });
+  const first = h.startSubmitRow("alpha", 6, "new review");
+  assert.equal(h.rateJobs.length, 1);
+  h.click("TV");
+  await h.resolve(1, page([]));
+  h.click("All");
+  await h.resolve(2, page(["alpha"], undefined, counts, [8], ["original"]));
 
-  // The newer save succeeds first, and then the older request fails out of order.
-  h.rateJobs[1].resolve(undefined);
-  await newer;
-  await h.settle();
-  h.rateJobs[0].reject(new Error("late failure"));
-  assert.equal(await older, false);
+  assert.equal(h.rows()[0]?.props.pendingSave, true);
+  const buttons = h.rowView("alpha").filter((n) => n.type === "button");
+  assert.ok(
+    buttons.some((n) => treeText(n.props.children) === "Saving…" && n.props.disabled),
+    "a remounted row stays locked while its earlier save is in flight",
+  );
+  assert.equal(
+    await h.startSubmitRow("alpha", 3, "overlapping edit"),
+    false,
+    "the parent refuses overlapping saves even if a stale row callback runs",
+  );
+  assert.equal(h.rateJobs.length, 1, "switching tabs cannot submit a second server write");
+
+  h.rateJobs[0].resolve(undefined);
+  assert.equal(await first, true);
   await h.settle();
   assert.equal(h.rows()[0]?.props.r.score, 6);
-  assert.equal(h.rows()[0]?.props.r.review, "newer draft");
+  assert.equal(h.rows()[0]?.props.r.review, "new review");
+  assert.equal(h.rows()[0]?.props.pendingSave, false);
 });
 
 test("an owner edit reports failure and retains the draft for retry", async () => {
@@ -731,4 +743,55 @@ test("the review filter and a query apply together", async () => {
   assert.deepEqual(h.ids(), ["beta"]);
   h.type("alpha");
   assert.deepEqual(h.ids(), ["alpha"]);
+});
+
+test("clearing a review keeps its filtered editor and error visible until the save settles", async () => {
+  const h = ratingsHarness({ deferRates: true });
+  await h.resolve(0, page(["alpha", "beta"], undefined, counts, [8, 7], ["a review"]));
+  h.render({ isOwner: true });
+  h.click("With review");
+  assert.deepEqual(h.ids(), ["alpha"]);
+
+  const buttons = () => h.rowView("alpha").filter((n) => n.type === "button");
+  buttons()
+    .find((n) => treeText(n.props.children) === "Edit")!
+    .props.onClick();
+  h.render();
+  h.rowView("alpha")
+    .find((n) => n.type === "textarea")!
+    .props.onChange({ target: { value: "" } });
+  h.render();
+  const pending = buttons()
+    .find((n) => treeText(n.props.children) === "Save changes")!
+    .props.onClick();
+  h.render();
+  assert.deepEqual(h.ids(), ["alpha"], "the row must remain visible while clearing its review");
+  assert.equal(
+    h.rows()[0]?.props.r.review,
+    "a review",
+    "the filter uses the saved review until success",
+  );
+
+  h.rateJobs[0].reject(new Error("network offline"));
+  await pending;
+  h.render();
+  assert.deepEqual(h.ids(), ["alpha"], "a failed save must not remove the reviewed rating");
+  assert.ok(h.rowText("alpha").includes("Could not save this rating"));
+  assert.equal(
+    h.rowView("alpha").find((n) => n.type === "textarea")?.props.value,
+    "",
+    "the blank review draft survives the error for retry",
+  );
+
+  const retry = buttons()
+    .find((n) => treeText(n.props.children) === "Save changes")!
+    .props.onClick();
+  h.rateJobs[1].resolve(undefined);
+  await retry;
+  h.render();
+  assert.deepEqual(
+    h.ids(),
+    [],
+    "after a successful clear the review-only filter can remove the row",
+  );
 });
