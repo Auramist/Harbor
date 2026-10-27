@@ -20,10 +20,13 @@ const noir: ProfileTheme = { palette: "noir", glass: false, gradient: false };
 
 test("a theme round-trips through the profile's custom CSS", () => {
   const css = withProfileTheme("", { palette: "forest", glass: true, gradient: true });
-  assert.deepEqual(parseProfileTheme(css), { palette: "forest", glass: true, gradient: true });
+  const parsed = parseProfileTheme(css);
+  assert.equal(parsed.palette, "forest");
+  assert.equal(parsed.glass, true);
+  assert.equal(parsed.gradient, true);
 });
 
-test("switching between a custom palette and presets preserves the saved custom colors", () => {
+test("a custom palette survives preset and automatic switches, including reloads", () => {
   const customColors = {
     canvas: "#111111",
     surface: "#222222",
@@ -39,6 +42,7 @@ test("switching between a custom palette and presets preserves the saved custom 
   const storedCustom = withProfileTheme("", custom);
   const parsedCustom = parseProfileTheme(storedCustom);
   assert.deepEqual(parsedCustom.colors, customColors);
+  assert.deepEqual(parsedCustom.savedCustomColors, customColors);
 
   // Choosing a preset changes the active palette, not the user's saved custom palette.
   const storedPreset = withProfileTheme(storedCustom, {
@@ -48,6 +52,15 @@ test("switching between a custom palette and presets preserves the saved custom 
   const parsedPreset = parseProfileTheme(storedPreset);
   assert.equal(parsedPreset.palette, "midnight");
   assert.deepEqual(parsedPreset.savedCustomColors, customColors);
+
+  // Choosing Automatic also hides the active palette without deleting the custom draft.
+  const storedAuto = withProfileTheme(storedPreset, {
+    ...parsedPreset,
+    palette: "auto",
+  });
+  const parsedAuto = parseProfileTheme(storedAuto);
+  assert.equal(parsedAuto.palette, "auto");
+  assert.deepEqual(parsedAuto.savedCustomColors, customColors);
 
   // The marker survives reloads, and returning to Custom restores the exact prior values.
   const storedAfterReload = withProfileTheme(storedPreset, {
@@ -59,6 +72,19 @@ test("switching between a custom palette and presets preserves the saved custom 
   assert.equal(restored.palette, "custom");
   assert.deepEqual(restored.colors, customColors);
   assert.deepEqual(restored.savedCustomColors, customColors);
+});
+
+test("older custom markers migrate their colors to the retained palette", () => {
+  const legacy = parseProfileTheme(
+    '/*harbor-profile-theme:{"palette":"custom","glass":false,"gradient":false,"colors":{"canvas":"#101010","surface":"#202020","accent":"#303030","ink":"#fefefe"}}*/',
+  );
+  assert.deepEqual(legacy.colors, {
+    canvas: "#101010",
+    surface: "#202020",
+    accent: "#303030",
+    ink: "#fefefe",
+  });
+  assert.deepEqual(legacy.savedCustomColors, legacy.colors);
 });
 
 test("the owner's css survives, with the marker kept out of it", () => {

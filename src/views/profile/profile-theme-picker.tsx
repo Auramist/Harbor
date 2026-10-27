@@ -71,6 +71,7 @@ function Swatch({ colors }: { colors?: SwatchColors | null }) {
 function seedColors(theme: ProfileTheme): CustomProfileColors {
   if (theme.palette === "custom" && theme.colors) return theme.colors;
   if (theme.savedCustomColors) return theme.savedCustomColors;
+  if (theme.colors) return theme.colors;
   const palette = paletteFor(theme.palette);
   const pick = (token: string, fallback: string) => {
     const value = palette?.tokens[token] ?? "";
@@ -184,6 +185,14 @@ export function ProfileThemePicker({
 
   const apply = async (next: ProfileTheme, kind: Exclude<Busy, null>) => {
     if (busy) return;
+    // Retain the last custom colors in component state as well as in the marker, so switching
+    // away and back before unmounting works without requiring a reload.
+    const retainedColors =
+      next.palette === "custom"
+        ? next.colors
+        : (next.savedCustomColors ??
+          (theme.palette === "custom" ? theme.colors : (theme.savedCustomColors ?? theme.colors)));
+    const saved = retainedColors ? { ...next, savedCustomColors: retainedColors } : next;
     setBusy(kind);
     setBusyPalette(kind === "palette" ? next.palette : null);
     setError(null);
@@ -191,9 +200,9 @@ export function ProfileThemePicker({
       // The customization endpoint replaces the fields it receives, so send the whole record
       // back with only the theme marker changed; otherwise saving a theme would wipe the rest.
       const updated = await socialPost<ProfileSummary>("/social/profile/customization", {
-        ...themeCustomizationRecord(summary, next, CANVAS_DEFAULT),
+        ...themeCustomizationRecord(summary, saved, CANVAS_DEFAULT),
       });
-      setTheme(next);
+      setTheme(saved);
       onSaved(updated);
     } catch (e) {
       setError((e as Error).message || t("Could not save your theme. Try again."));

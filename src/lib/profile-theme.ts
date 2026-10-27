@@ -298,15 +298,19 @@ function normalizeTheme(value: unknown): ProfileTheme {
     glass: raw.glass === true,
     gradient: raw.gradient === true,
   };
-  if (palette === "custom") theme.colors = normalizeColors(raw.colors);
-  if (raw.savedCustomColors && typeof raw.savedCustomColors === "object") {
+  if (palette === "custom") {
+    theme.colors = normalizeColors(raw.colors);
+    // Older custom markers only stored `colors`; migrate that to the retained palette so
+    // the first switch to a preset doesn't lose it.
+    theme.savedCustomColors = normalizeColors(raw.savedCustomColors ?? raw.colors);
+  } else if (raw.savedCustomColors && typeof raw.savedCustomColors === "object") {
     theme.savedCustomColors = normalizeColors(raw.savedCustomColors);
   }
   return theme;
 }
 
 export function isDefaultProfileTheme(theme: ProfileTheme): boolean {
-  return theme.palette === "auto" && !theme.glass && !theme.gradient;
+  return theme.palette === "auto" && !theme.glass && !theme.gradient && !theme.savedCustomColors;
 }
 
 /** The theme stored in a profile's custom CSS, or the default when absent or unreadable. */
@@ -347,7 +351,9 @@ export function withProfileTheme(css: string | null | undefined, theme: ProfileT
       ? normalizeColors(theme.colors)
       : theme.savedCustomColors
         ? normalizeColors(theme.savedCustomColors)
-        : undefined;
+        : theme.colors
+          ? normalizeColors(theme.colors)
+          : undefined;
   if (savedCustomColors) {
     // Persist the draft alongside a preset so returning to Custom restores the last colours.
     payload.savedCustomColors = savedCustomColors;
