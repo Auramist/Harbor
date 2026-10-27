@@ -286,6 +286,7 @@ test("expanded public ratings bind both poster and title without changing the di
   try {
     const { UserRatings } = componentLoader({
       "@/components/ratings/rating-stars": { RatingStars: () => null },
+      "@/views/profile/profile-theme-context": { useProfileThemeSurfaceStyle: () => ({}) },
       "@/components/icons/search-icon": { Search: () => null },
       "@/lib/ratings/actions": { REVIEW_MAX: 4000, rate: async () => {} },
       "@/lib/social/ratings-api": {
