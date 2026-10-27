@@ -513,6 +513,7 @@ export function ProfileView({
             <UserRatings
               handle={handle}
               alias={summary.alias}
+              isOwner={summary.isOwner}
               onOpenMeta={onOpenMeta}
               onClose={() => setShowRatings(false)}
             />
