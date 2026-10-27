@@ -23,6 +23,44 @@ test("a theme round-trips through the profile's custom CSS", () => {
   assert.deepEqual(parseProfileTheme(css), { palette: "forest", glass: true, gradient: true });
 });
 
+test("switching between a custom palette and presets preserves the saved custom colors", () => {
+  const customColors = {
+    canvas: "#111111",
+    surface: "#222222",
+    accent: "#33aa55",
+    ink: "#eeeeee",
+  };
+  const custom: ProfileTheme = {
+    palette: "custom",
+    glass: true,
+    gradient: false,
+    colors: customColors,
+  };
+  const storedCustom = withProfileTheme("", custom);
+  const parsedCustom = parseProfileTheme(storedCustom);
+  assert.deepEqual(parsedCustom.colors, customColors);
+
+  // Choosing a preset changes the active palette, not the user's saved custom palette.
+  const storedPreset = withProfileTheme(storedCustom, {
+    ...parsedCustom,
+    palette: "midnight",
+  });
+  const parsedPreset = parseProfileTheme(storedPreset);
+  assert.equal(parsedPreset.palette, "midnight");
+  assert.deepEqual(parsedPreset.savedCustomColors, customColors);
+
+  // The marker survives reloads, and returning to Custom restores the exact prior values.
+  const storedAfterReload = withProfileTheme(storedPreset, {
+    ...parsedPreset,
+    palette: "custom",
+    colors: parsedPreset.savedCustomColors,
+  });
+  const restored = parseProfileTheme(storedAfterReload);
+  assert.equal(restored.palette, "custom");
+  assert.deepEqual(restored.colors, customColors);
+  assert.deepEqual(restored.savedCustomColors, customColors);
+});
+
 test("the owner's css survives, with the marker kept out of it", () => {
   const userCss = ".card {\n  border-radius: 0;\n}";
   const stored = withProfileTheme(userCss, noir);

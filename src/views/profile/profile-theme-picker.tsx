@@ -70,6 +70,7 @@ function Swatch({ colors }: { colors?: SwatchColors | null }) {
 /** Starting point for the custom palette: whatever the owner is looking at right now. */
 function seedColors(theme: ProfileTheme): CustomProfileColors {
   if (theme.palette === "custom" && theme.colors) return theme.colors;
+  if (theme.savedCustomColors) return theme.savedCustomColors;
   const palette = paletteFor(theme.palette);
   const pick = (token: string, fallback: string) => {
     const value = palette?.tokens[token] ?? "";
@@ -270,9 +271,13 @@ export function ProfileThemePicker({
           type="button"
           aria-pressed={theme.palette === "custom"}
           disabled={!!busy}
-          onClick={() =>
-            void apply({ ...theme, palette: "custom", colors: seedColors(theme) }, "palette")
-          }
+          onClick={() => {
+            const colors = seedColors(theme);
+            void apply(
+              { ...theme, palette: "custom", colors, savedCustomColors: colors },
+              "palette",
+            );
+          }}
           className={tileClass(theme.palette === "custom")}
         >
           {tileBody("custom", "Custom", "Any colours you want, hex and all.", seedColors(theme))}
@@ -284,7 +289,9 @@ export function ProfileThemePicker({
           key={JSON.stringify(theme.colors)}
           colors={theme.colors ?? DEFAULT_CUSTOM_COLORS}
           busy={!!busy}
-          onApply={(colors) => void apply({ ...theme, colors }, "palette")}
+          onApply={(colors) =>
+            void apply({ ...theme, colors, savedCustomColors: colors }, "palette")
+          }
         />
       )}
 

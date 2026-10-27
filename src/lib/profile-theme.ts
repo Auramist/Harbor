@@ -34,6 +34,8 @@ export type ProfileTheme = {
   gradient: boolean;
   /** Own colours when the palette is "custom". */
   colors?: CustomProfileColors;
+  /** Last custom palette, retained while the active selection is a preset. */
+  savedCustomColors?: CustomProfileColors;
 };
 
 export const DEFAULT_CUSTOM_COLORS: CustomProfileColors = {
@@ -297,6 +299,9 @@ function normalizeTheme(value: unknown): ProfileTheme {
     gradient: raw.gradient === true,
   };
   if (palette === "custom") theme.colors = normalizeColors(raw.colors);
+  if (raw.savedCustomColors && typeof raw.savedCustomColors === "object") {
+    theme.savedCustomColors = normalizeColors(raw.savedCustomColors);
+  }
   return theme;
 }
 
@@ -337,7 +342,17 @@ export function withProfileTheme(css: string | null | undefined, theme: ProfileT
     gradient: theme.gradient,
   };
   // Only own colours need shipping; every preset is rebuilt from its id.
-  if (theme.palette === "custom") payload.colors = normalizeColors(theme.colors);
+  const savedCustomColors =
+    theme.palette === "custom"
+      ? normalizeColors(theme.colors)
+      : theme.savedCustomColors
+        ? normalizeColors(theme.savedCustomColors)
+        : undefined;
+  if (savedCustomColors) {
+    // Persist the draft alongside a preset so returning to Custom restores the last colours.
+    payload.savedCustomColors = savedCustomColors;
+    if (theme.palette === "custom") payload.colors = savedCustomColors;
+  }
   const marker = `/*${MARKER_NAME}:${JSON.stringify(payload)}*/`;
   return body ? `${marker}\n${body}` : marker;
 }
