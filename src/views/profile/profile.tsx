@@ -4,7 +4,9 @@ import { useAuth } from "@/lib/auth";
 import { socialPatch } from "@/lib/social/client";
 import {
   CARD_ORDER_DEFAULT,
+  canCommentOnRating,
   effectiveOrder,
+  isCardShown,
   moveCard,
   sanitizeLayout,
   type CardKey,
@@ -168,6 +170,15 @@ export function ProfileView({
     if (isOwner && consumeProfileEditIntent(handle)) setEditing(true);
   }, [isOwner, handle]);
 
+  // Scroll only after the quote seed has reached the visible Comments composer.
+  useEffect(() => {
+    if (!quoteSeed) return;
+    const frame = requestAnimationFrame(() => {
+      commentsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [quoteSeed]);
+
   useEffect(() => {
     if (!editing && !arranging && !pickingLists && !pickingFav && expanded == null) return;
     return pushBackHandler(() => {
@@ -235,14 +246,12 @@ export function ProfileView({
   // Quoting a rating closes the ratings view, hands the rating to the comments composer and takes
   // the viewer there, so the next thing they type replies to that review.
   const commentOnRating = (rating: PublicRating) => {
+    if (!canCommentOnRating(layout)) return;
     setShowRatings(false);
     setQuoteSeed((prev) => ({
       quote: ratingQuoteFrom(rating, handle),
       nonce: (prev?.nonce ?? 0) + 1,
     }));
-    requestAnimationFrame(() => {
-      commentsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
   };
   const cardNodes: Partial<Record<CardKey, ReactNode>> = {
     about: (
@@ -401,22 +410,25 @@ export function ProfileView({
         {locked ? (
           <div className="space-y-6">
             <ProfilePrivate alias={summary.alias} />
-            <CommentsSection
-              handle={handle}
-              isOwner={summary.isOwner}
-              signedIn={!!authKey}
-              onOpenAuthor={onOpenProfile}
-              onOpenMeta={onOpenMeta}
-              seedQuote={quoteSeed}
-              ownerAvatar={summary.avatarUrl}
-            />
+            <div ref={commentsRef}>
+              <CommentsSection
+                handle={handle}
+                isOwner={summary.isOwner}
+                signedIn={!!authKey}
+                onOpenAuthor={onOpenProfile}
+                onOpenMeta={onOpenMeta}
+                seedQuote={quoteSeed}
+                ownerAvatar={summary.avatarUrl}
+              />
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_340px]">
             <div className="min-w-0 space-y-6">
               {orderedCards.map((k, i) => {
                 const isHidden = hiddenSet.has(k);
-                if (isHidden && !arranging) return null;
+                const shown = isCardShown(layout, k, { arranging });
+                if (!shown) return null;
                 return (
                   <div key={k} ref={k === "comments" ? commentsRef : undefined}>
                     {arranging && summary.isOwner && (
@@ -523,6 +535,7 @@ export function ProfileView({
             onOpenMeta={onOpenMeta}
             onClose={() => setShowRatings(false)}
             onComment={viewerSignedIn ? commentOnRating : undefined}
+            commentDisabled={!canCommentOnRating(layout)}
           />
         )}
         {importingRatings && (

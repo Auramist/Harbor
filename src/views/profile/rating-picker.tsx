@@ -1,4 +1,4 @@
-import { Quote, Star, Users, X } from "lucide-react";
+import { Quote, RotateCcw, Star, Users, X } from "lucide-react";
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useT } from "@/lib/i18n";
 import { useRatingPoster } from "@/lib/ratings/poster";
@@ -11,7 +11,7 @@ import {
 } from "@/lib/ratings/trigger";
 import type { PublicRating } from "@/lib/ratings/types";
 import { fetchFriends } from "@/lib/social/friends";
-import { currentAuthor } from "@/lib/theme-auth";
+import { currentAuthor, subscribeAuthor } from "@/lib/theme-auth";
 import { Avatar } from "./profile-bits";
 import { PeoplePanel } from "./rating-people";
 import { loadRatings } from "./use-quoted-rating";
@@ -92,8 +92,13 @@ export function useRatingSuggest(text: string, caret: number, sources: RatingSou
   const [view, setView] = useState<"ratings" | "people">("ratings");
   const [ratings, setRatings] = useState<PublicRating[]>([]);
   const [loadedHandle, setLoadedHandle] = useState("");
+  const [partial, setPartial] = useState(false);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [index, setIndex] = useState(0);
+  const [attempt, setAttempt] = useState(0);
+  const [sessionRevision, setSessionRevision] = useState(0);
+
+  useEffect(() => subscribeAuthor(() => setSessionRevision((revision) => revision + 1)), []);
 
   useEffect(() => {
     if (!active || !handle) {
@@ -101,15 +106,22 @@ export function useRatingSuggest(text: string, caret: number, sources: RatingSou
       return;
     }
     let live = true;
-    void loadRatings(handle).then((list) => {
+    // Ratings are scoped to the active session; don't keep the previous session's list visible.
+    setRatings([]);
+    setLoadedHandle("");
+    setPartial(false);
+    // A failed page keeps the ratings already fetched, so the list is offered as it stands and
+    // only flagged as unfinished.
+    void loadRatings(handle).then(({ items, complete }) => {
       if (!live) return;
-      setRatings(list);
+      setRatings(items);
       setLoadedHandle(handle);
+      setPartial(!complete);
     });
     return () => {
       live = false;
     };
-  }, [active, handle]);
+  }, [active, handle, attempt, sessionRevision]);
 
   const ready = loadedHandle === handle;
   const options = useMemo(
@@ -143,6 +155,9 @@ export function useRatingSuggest(text: string, caret: number, sources: RatingSou
     visible,
     view,
     loading: !!token && !ready && dismissedAt === null,
+    /** The walk stopped early, so the list on screen may not hold every rating. */
+    incomplete: !!token && ready && partial,
+    retry: () => setAttempt((n) => n + 1),
     index: current,
     move: (step: number) =>
       setIndex((i) => (options.length ? (i + step + options.length) % options.length : 0)),
@@ -238,11 +253,13 @@ export function RatingPicker({
           {suggest.loading ? (
             <p className="px-3 py-2.5 text-[12.5px] text-ink-subtle">{t("Loading ratings…")}</p>
           ) : suggest.options.length === 0 ? (
-            <p className="px-3 py-2.5 text-[12.5px] text-ink-subtle">
-              {suggest.token?.query.trim()
-                ? t('No matches for "{query}"', { query: suggest.token.query.trim() })
-                : t("No ratings to quote from this person.")}
-            </p>
+            suggest.incomplete ? null : (
+              <p className="px-3 py-2.5 text-[12.5px] text-ink-subtle">
+                {suggest.token?.query.trim()
+                  ? t('No matches for "{query}"', { query: suggest.token.query.trim() })
+                  : t("No ratings to quote from this person.")}
+              </p>
+            )
           ) : (
             <div
               role="listbox"
@@ -272,6 +289,22 @@ export function RatingPicker({
                   </span>
                 </button>
               ))}
+            </div>
+          )}
+          {suggest.incomplete && (
+            <div className="flex items-center justify-between gap-2 border-t border-soft px-2.5 py-1.5">
+              <span className="min-w-0 truncate text-[11.5px] text-ink-subtle">
+                {t("Some ratings could not be loaded.")}
+              </span>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={suggest.retry}
+                className="inline-flex shrink-0 items-center gap-1 rounded-full bg-raised px-2.5 py-1 text-[11.5px] font-semibold text-ink-muted transition-colors hover:text-ink"
+              >
+                <RotateCcw size={11} />
+                {t("Retry")}
+              </button>
             </div>
           )}
         </>

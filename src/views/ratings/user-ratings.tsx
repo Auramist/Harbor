@@ -36,12 +36,14 @@ export function UserRatings({
   onOpenMeta,
   onClose,
   onComment,
+  commentDisabled = false,
 }: {
   handle: string;
   alias: string;
   onOpenMeta?: (metaId: string, kind?: string, hint?: { name?: string; poster?: string }) => void;
   onClose: () => void;
   onComment?: (rating: PublicRating) => void;
+  commentDisabled?: boolean;
 }) {
   const t = useT();
   const [type, setType] = useState("all");
@@ -184,7 +186,13 @@ export function UserRatings({
           ) : (
             <div className="flex flex-col gap-3">
               {items.map((r) => (
-                <RatingRow key={r.itemKey} r={r} onOpenMeta={onOpenMeta} onComment={onComment} />
+                <RatingRow
+                  key={r.itemKey}
+                  r={r}
+                  onOpenMeta={onOpenMeta}
+                  onComment={onComment}
+                  commentDisabled={commentDisabled}
+                />
               ))}
               {cursor && (
                 <button
@@ -210,10 +218,12 @@ function RatingRow({
   r,
   onOpenMeta,
   onComment,
+  commentDisabled,
 }: {
   r: PublicRating;
   onOpenMeta?: (metaId: string, kind?: string, hint?: { name?: string; poster?: string }) => void;
   onComment?: (rating: PublicRating) => void;
+  commentDisabled: boolean;
 }) {
   const t = useT();
   const [revealed, setRevealed] = useState(false);
@@ -286,13 +296,24 @@ function RatingRow({
           </div>
         )}
         {onComment && (
-          <button
-            type="button"
-            onClick={() => onComment(r)}
-            className="mt-2.5 inline-flex items-center gap-1.5 rounded-full border border-edge px-3 py-1.5 text-[12.5px] font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
-          >
-            <MessageSquare size={14} /> {t("Comment on it")}
-          </button>
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+            <button
+              type="button"
+              onClick={() => onComment(r)}
+              disabled={commentDisabled}
+              title={commentDisabled ? t("Comments are hidden") : undefined}
+              className={`inline-flex items-center gap-1.5 rounded-full border border-edge px-3 py-1.5 text-[12.5px] font-medium text-ink-muted ${
+                commentDisabled
+                  ? "cursor-not-allowed opacity-50"
+                  : "transition-colors hover:bg-elevated hover:text-ink"
+              }`}
+            >
+              <MessageSquare size={14} /> {t("Comment on it")}
+            </button>
+            {commentDisabled && (
+              <span className="text-[11.5px] text-ink-subtle">{t("Comments are hidden")}</span>
+            )}
+          </div>
         )}
       </div>
     </div>

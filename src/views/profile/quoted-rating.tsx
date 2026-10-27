@@ -1,4 +1,4 @@
-import { Eye, Star } from "lucide-react";
+import { Eye, RotateCcw, Star } from "lucide-react";
 import { useState } from "react";
 import { Poster } from "@/components/poster";
 import { RatingStars } from "@/components/ratings/rating-stars";
@@ -79,6 +79,16 @@ export function QuotedRating({
           <div className="mt-1">
             <RatingStars value={score} readOnly size={12} />
           </div>
+          {lookup.state === "incomplete" && lookup.retry && (
+            <button
+              type="button"
+              onClick={lookup.retry}
+              className="mt-1.5 inline-flex items-center gap-1.5 text-[11.5px] text-ink-subtle transition-colors hover:text-ink"
+            >
+              <RotateCcw size={11} />
+              {t("The review could not be loaded. Retry")}
+            </button>
+          )}
           {rating?.review && (
             <div className="relative mt-1.5">
               <p

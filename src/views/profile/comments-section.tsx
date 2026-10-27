@@ -128,6 +128,7 @@ export function CommentsSection({
               onToggleLike={toggleLike}
               onReply={submit}
               sending={sending}
+              sources={sources}
               onOpenAuthor={onOpenAuthor}
               onOpenMeta={onOpenMeta}
             />
