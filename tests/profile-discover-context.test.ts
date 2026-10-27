@@ -9,10 +9,7 @@ import * as lucide from "lucide-react";
 import ts from "typescript";
 import * as contextMenu from "../src/lib/context-menu.tsx";
 import { dispatchKeyboardContextMenu } from "../src/lib/context-content.ts";
-import {
-  pickTmdbTitle,
-  tmdbEnglishTitle,
-} from "../src/lib/providers/tmdb/tmdb-title-fallback.ts";
+import { pickTmdbTitle, tmdbEnglishTitle } from "../src/lib/providers/tmdb/tmdb-title-fallback.ts";
 
 function componentLoader(extra: Record<string, unknown> = {}) {
   const wrap = ({ children }: { children?: React.ReactNode }) =>

@@ -145,7 +145,9 @@ html[data-os="linux"][data-mpv-embed="1"] [data-harbor-stream-switcher] *::after
   box-shadow: none !important;
   will-change: auto !important;
 }
-html[data-os="linux"][data-mpv-embed="1"] [data-harbor-stream-switcher] > div:not(.pointer-events-none) {
+html[data-os="linux"][data-mpv-embed="1"]
+  [data-harbor-stream-switcher]
+  > div:not(.pointer-events-none) {
   background: #222228 !important;
   background-image: none !important;
 }
