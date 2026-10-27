@@ -14,6 +14,12 @@ function deferred() {
 }
 
 const counts = { total: 300, movie: 100, series: 120, anime: 60, manga: 20 };
+const treeText = (value: any): string => {
+  if (value == null || typeof value === "boolean") return "";
+  if (Array.isArray(value)) return value.map(treeText).join("");
+  return typeof value === "object" ? treeText(value.props?.children) : String(value);
+};
+
 const page = (
   ids: string[],
   nextCursor?: string,
@@ -34,7 +40,7 @@ const page = (
   avg: 8,
 });
 
-function ratingsHarness(options: { failRate?: boolean } = {}) {
+function ratingsHarness(options: { failRate?: boolean; deferRates?: boolean } = {}) {
   const states: any[] = [],
     refs: any[] = [],
     memos: any[] = [];
@@ -47,6 +53,7 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
     mounted = true,
     writesAfterUnmount = 0;
   let pending: Array<{ i: number; deps: any[]; run: () => any }> = [];
+  let componentStateStart = 0;
   const same = (a: any[], b: any[]) =>
     a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   const react = {
@@ -86,6 +93,7 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
   }> = [];
   const jsx = (type: any, props: any, key: any) => ({ type, props, key });
   const rates: Array<{ itemKey: string; score: number; review?: string }> = [];
+  const rateJobs: Array<ReturnType<typeof deferred>> = [];
   const mocks: Record<string, any> = {
     react,
     "react/jsx-runtime": { jsx, jsxs: jsx },
@@ -98,13 +106,19 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
       MessageSquare: "message-square",
       X: "x",
     },
-    "@/lib/ratings/poster": {},
-    "@/components/poster": {},
-    "@/components/ratings/rating-stars": {},
-    "@/views/profile/profile-bits": {},
-    "@/views/profile/use-profile-title": {},
-    "@/lib/social/profile-media-meta": {},
-    "@/components/context-menu/use-title-context": {},
+    "@/lib/ratings/poster": { useRatingPoster: () => null },
+    "@/components/poster": { Poster: "poster" },
+    "@/components/ratings/rating-stars": { RatingStars: "rating-stars" },
+    "@/views/profile/profile-bits": { timeAgo: () => "today" },
+    "@/views/profile/use-profile-title": {
+      useProfileTitle: (itemKey: string, title: string, poster: string) => ({
+        ref: null,
+        title: title || itemKey,
+        poster,
+      }),
+    },
+    "@/lib/social/profile-media-meta": { profileMediaMeta: () => ({}) },
+    "@/components/context-menu/use-title-context": { useTitleContext: () => () => {} },
     "@/lib/i18n": { useT: () => (value: string) => value },
     "@/views/profile/profile-theme-context": { useProfileThemeSurfaceStyle: () => ({}) },
     "@/components/icons/search-icon": { Search: "search" },
@@ -112,6 +126,11 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
       REVIEW_MAX: 4000,
       rate(target: any, score: number, extra: any) {
         rates.push({ itemKey: target.itemKey, score, review: extra?.review });
+        if (options.deferRates) {
+          const job = deferred();
+          rateJobs.push(job);
+          return job.promise;
+        }
         return options.failRate ? Promise.reject(new Error("fixture offline")) : Promise.resolve();
       },
       unrate() {
@@ -158,6 +177,7 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
       si = ri = mi = ei = 0;
       pending = [];
       tree = exports.UserRatings(props);
+      componentStateStart = si;
       for (const effect of pending) effects[effect.i]?.cleanup?.();
       for (const effect of pending)
         effects[effect.i] = { deps: effect.deps, cleanup: effect.run() };
@@ -168,17 +188,30 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
     if (Array.isArray(value)) return value.flatMap((child) => nodes(child));
     return [value, ...nodes(value.props?.children ?? null)];
   }
-  function text(value: any): string {
+  function treeText(value: any): string {
     if (value == null || typeof value === "boolean") return "";
-    if (Array.isArray(value)) return value.map(text).join("");
-    return typeof value === "object" ? text(value.props?.children) : String(value);
+    if (Array.isArray(value)) return value.map(treeText).join("");
+    return typeof value === "object" ? treeText(value.props?.children) : String(value);
   }
   function button(label: string) {
     const found = nodes(tree).find(
-      (n) => n.type === "button" && text(n.props.children).startsWith(label),
+      (n) => n.type === "button" && treeText(n.props.children).startsWith(label),
     );
     assert.ok(found, `missing button ${label}`);
     return found;
+  }
+  function rowView(itemKey: string) {
+    const component = nodes(tree).find((n) => n.props?.r?.itemKey === itemKey);
+    assert.ok(component, `missing row ${itemKey}`);
+    assert.equal(typeof component.type, "function", "rating row component should be renderable");
+    si = componentStateStart;
+    return nodes(component.type(component.props));
+  }
+  function rowText(itemKey: string): string {
+    const component = nodes(tree).find((n) => n.props?.r?.itemKey === itemKey);
+    assert.ok(component, `missing row ${itemKey}`);
+    si = componentStateStart;
+    return treeText(component.type(component.props));
   }
   function input() {
     const found = nodes(tree).find((n) => n.type === "input");
@@ -200,9 +233,16 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
     resolve,
     settle,
     button,
-    bodyText: () => text(tree),
+    bodyText: () => treeText(tree),
     rows: () => nodes(tree).filter((n) => n.props?.r),
+    rowView,
+    rowText,
     rates: () => rates,
+    rateJobs,
+    reject(index: number, error = new Error("fixture offline")) {
+      requests[index].job.reject(error);
+      return settle();
+    },
     type(value: string) {
       input().props.onChange({ target: { value } });
       render();
@@ -222,12 +262,17 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
       target.props.onClick();
       render();
     },
-    async submitRow(itemKey: string, score: number, review?: string) {
+    startSubmitRow(itemKey: string, score: number, review?: string) {
       const row = nodes(tree).find((n) => n.props?.r?.itemKey === itemKey);
       assert.ok(row, `missing row ${itemKey}`);
       assert.ok(row.props.onRate, "row is not editable");
-      row.props.onRate(row.props.r, score, review);
+      const pending = row.props.onRate(row.props.r, score, review);
       render();
+      return pending;
+    },
+    async submitRow(itemKey: string, score: number, review?: string) {
+      const pending = this.startSubmitRow(itemKey, score, review);
+      await pending;
       await settle();
     },
     click(label: string) {
@@ -242,7 +287,7 @@ function ratingsHarness(options: { failRate?: boolean } = {}) {
     buttons: () =>
       nodes(tree)
         .filter((n) => n.type === "button")
-        .map((n) => text(n.props.children)),
+        .map((n) => treeText(n.props.children)),
     unmount() {
       mounted = false;
       effects.forEach((effect) => effect.cleanup?.());
@@ -483,6 +528,28 @@ test("a rejected quick edit rolls the row back to the saved score", async () => 
   assert.equal(h.rows()[0]?.props.r.score, 8, "a failed save must not look saved");
 });
 
+test("a failed automatic page stays visibly incomplete and retries from its cursor", async () => {
+  const h = ratingsHarness();
+  await h.resolve(0, page(["one", "two"], "cursor-1"));
+  h.type("missing");
+  assert.deepEqual(h.requests[1].opts, { type: "all", cursor: "cursor-1" });
+  await h.reject(1);
+  assert.ok(h.bodyText().includes("Could not load all ratings"));
+  assert.ok(
+    !h.bodyText().includes("No ratings match your search"),
+    "an incomplete search must not be reported as having no matches",
+  );
+  h.click("Retry");
+  assert.deepEqual(
+    h.requests[2].opts,
+    { type: "all", cursor: "cursor-1" },
+    "retry starts from the failed page rather than resetting or skipping it",
+  );
+  await h.resolve(2, page(["missing-title"]));
+  assert.deepEqual(h.ids(), ["missing-title"]);
+  assert.ok(!h.bodyText().includes("Could not load all ratings"));
+});
+
 test("ordering holds the list until every page is loaded so the order never churns", async () => {
   const h = ratingsHarness();
   await h.resolve(0, page(["a", "b"], "cursor-1", counts, [3, 9]));
@@ -491,6 +558,91 @@ test("ordering holds the list until every page is loaded so the order never chur
   assert.ok(h.bodyText().includes("Loading all ratings"));
   await h.resolve(1, page(["c"], undefined, counts, [7]));
   assert.deepEqual(h.ids(), ["b", "c", "a"], "the settled order is shown once");
+});
+
+test("a stale failed rating save cannot roll back a newer successful save", async () => {
+  const h = ratingsHarness({ deferRates: true });
+  await h.resolve(0, page(["alpha"]));
+  h.render({ isOwner: true });
+
+  const older = h.startSubmitRow("alpha", 4, "older draft");
+  assert.deepEqual(h.rates()[0], { itemKey: "alpha", score: 4, review: "older draft" });
+  const newer = h.startSubmitRow("alpha", 6, "newer draft");
+  assert.deepEqual(h.rates()[1], { itemKey: "alpha", score: 6, review: "newer draft" });
+
+  // The newer save succeeds first, and then the older request fails out of order.
+  h.rateJobs[1].resolve(undefined);
+  await newer;
+  await h.settle();
+  h.rateJobs[0].reject(new Error("late failure"));
+  assert.equal(await older, false);
+  await h.settle();
+  assert.equal(h.rows()[0]?.props.r.score, 6);
+  assert.equal(h.rows()[0]?.props.r.review, "newer draft");
+});
+
+test("an owner edit reports failure and retains the draft for retry", async () => {
+  const h = ratingsHarness({ failRate: true });
+  await h.resolve(0, page(["alpha"]));
+  h.render({ isOwner: true });
+  const rowButtons = () => h.rowView("alpha").filter((n) => n.type === "button");
+  rowButtons()
+    .find((n) => treeText(n.props.children) === "Edit")!
+    .props.onClick();
+  h.render();
+  const editNodes = h.rowView("alpha");
+  const stars = editNodes.find((n) => n.type === "rating-stars");
+  assert.ok(stars, "edit mode renders the score control");
+  stars.props.onChange(3);
+  h.render();
+  const editButtons = rowButtons();
+  const save = editButtons.find((n) => treeText(n.props.children) === "Save changes");
+  assert.ok(save, "edit mode exposes Save changes");
+  await save.props.onClick();
+  h.render();
+  assert.equal(h.rows()[0]?.props.r.score, 8, "the saved value rolls back on the current failure");
+  assert.ok(h.rowText("alpha").includes("Could not save this rating"));
+  assert.ok(
+    rowButtons().some((n) => treeText(n.props.children) === "Save changes"),
+    "editing remains open for a retry",
+  );
+});
+
+test("the edit form stays open while a save is pending, preventing a second save", async () => {
+  const h = ratingsHarness({ deferRates: true });
+  await h.resolve(0, page(["alpha"]));
+  h.render({ isOwner: true });
+  const rowButtons = () => h.rowView("alpha").filter((n) => n.type === "button");
+  rowButtons()
+    .find((n) => treeText(n.props.children) === "Edit")!
+    .props.onClick();
+  h.render();
+  const editNodes = h.rowView("alpha");
+  const stars = editNodes.find((n) => n.type === "rating-stars");
+  assert.ok(stars, "edit mode renders the score control");
+  stars.props.onChange(3);
+  h.render();
+  const save = rowButtons().find((n) => treeText(n.props.children) === "Save changes");
+  assert.ok(save);
+  const pending = save.props.onClick();
+  h.render();
+  const pendingButtons = rowButtons();
+  assert.ok(
+    pendingButtons.some((n) => treeText(n.props.children) === "Saving…" && n.props.disabled),
+    "Save stays disabled and reports its pending state",
+  );
+  assert.ok(
+    !pendingButtons.some((n) => treeText(n.props.children) === "Edit"),
+    "the user cannot reopen the row and start an overlapping save",
+  );
+  assert.ok(
+    pendingButtons.some((n) => treeText(n.props.children) === "Cancel" && n.props.disabled),
+    "the pending save cannot be dismissed while its result is unknown",
+  );
+  h.rateJobs[0].resolve(undefined);
+  await pending;
+  h.render();
+  assert.ok(rowButtons().some((n) => treeText(n.props.children) === "Edit"));
 });
 
 test("an owner edit saves the review text alongside the score", async () => {

@@ -69,9 +69,12 @@ export function UserRatings({
   const [sort, setSort] = useState<SortMode>("default");
   const [reviewsOnly, setReviewsOnly] = useState(false);
   const [loadingAll, setLoadingAll] = useState(false);
+  const [walkFailed, setWalkFailed] = useState(false);
+  const [walkAttempt, setWalkAttempt] = useState(0);
   const cursorRef = useRef<string | undefined>(undefined);
   const seen = useRef<string | null>(null);
   const request = useRef<RatingsRequest | null>(null);
+  const editVersions = useRef(new Map<string, number>());
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -98,6 +101,7 @@ export function UserRatings({
     request.current = current;
     setLoading(true);
     setMore(false);
+    setWalkFailed(false);
     setCursor(undefined);
     cursorRef.current = undefined;
     setItems([]);
@@ -200,8 +204,10 @@ export function UserRatings({
     if (!current || current.handle !== handle || current.type !== type) return;
     let cancelled = false;
     setLoadingAll(true);
+    setWalkFailed(false);
     current.walking = true;
     void (async () => {
+      let failed = false;
       while (!cancelled) {
         // A manual Load More that is already fetching owns the cursor; wait for its page and
         // continue from wherever it leaves off instead of asking for the same one again.
@@ -215,24 +221,35 @@ export function UserRatings({
           current.controller.signal,
         ).catch(() => null);
         if (cancelled || request.current !== current || current.controller.signal.aborted) return;
-        if (!page) break;
+        // The cursor is untouched by a failure, so a retry picks up exactly here.
+        if (!page) {
+          failed = true;
+          break;
+        }
         cursorRef.current = page.nextCursor;
         appendItems(page.items);
         setCursor(page.nextCursor);
       }
       current.walking = false;
-      if (!cancelled) setLoadingAll(false);
+      if (!cancelled) {
+        setLoadingAll(false);
+        // A walk that stopped early must not be presented as the finished list.
+        if (failed) setWalkFailed(true);
+      }
     })();
     return () => {
       cancelled = true;
       current.walking = false;
     };
-  }, [appendItems, walkAll, loading, handle, type]);
+  }, [appendItems, walkAll, loading, handle, type, walkAttempt]);
 
   // Ordering a partly loaded list would visibly reshuffle as pages stream in, so
   // the list is held until the walk finishes. Searching still streams: matches
   // appearing as they are found is the point of it.
   const holdForOrder = loadingAll && sort !== "default";
+  // An unfinished walk is a reason to retry, not a finished result to report as final.
+  const walkError = walkFailed && walkAll;
+  const retryWalk = () => setWalkAttempt((n) => n + 1);
 
   const filtered = items.filter(
     (r) =>
@@ -243,30 +260,45 @@ export function UserRatings({
       ? filtered
       : [...filtered].sort((a, b) => (sort === "high" ? b.score - a.score : a.score - b.score));
 
-  const changeRating = useCallback(async (r: PublicRating, score: number, review?: string) => {
-    const nextReview = review?.trim() || undefined;
-    if (score === r.score && nextReview === r.review) return;
-    const previous = { score: r.score, review: r.review };
-    setItems((list) =>
-      list.map((x) => (x.itemKey === r.itemKey ? { ...x, score, review: nextReview } : x)),
-    );
-    try {
-      await rate(
-        { itemKey: r.itemKey, mediaType: r.mediaType, title: r.title, poster: r.posterUrl },
-        score,
-        { review: nextReview, spoiler: r.spoiler },
+  const changeRating = useCallback(
+    async (r: PublicRating, score: number, review?: string): Promise<boolean> => {
+      const nextReview = review?.trim() || undefined;
+      if (score === r.score && nextReview === r.review) return true;
+      const previous = { score: r.score, review: r.review };
+      // Every save takes a new version for its rating, and only the newest one may write the
+      // row back: a slow failure must not undo an edit that has already landed.
+      const version = (editVersions.current.get(r.itemKey) ?? 0) + 1;
+      editVersions.current.set(r.itemKey, version);
+      setItems((list) =>
+        list.map((x) => (x.itemKey === r.itemKey ? { ...x, score, review: nextReview } : x)),
       );
-    } catch {
-      // A rejected edit must not leave the row claiming a rating the server never took.
-      if (!request.current?.controller.signal.aborted) {
-        setItems((list) =>
-          list.map((x) =>
-            x.itemKey === r.itemKey ? { ...x, score: previous.score, review: previous.review } : x,
-          ),
+      try {
+        await rate(
+          { itemKey: r.itemKey, mediaType: r.mediaType, title: r.title, poster: r.posterUrl },
+          score,
+          { review: nextReview, spoiler: r.spoiler },
         );
+        return true;
+      } catch {
+        // A rejected edit must not leave the row claiming a rating the server never took,
+        // and a stale rejection must leave the newer save's value alone.
+        if (
+          editVersions.current.get(r.itemKey) === version &&
+          !request.current?.controller.signal.aborted
+        ) {
+          setItems((list) =>
+            list.map((x) =>
+              x.itemKey === r.itemKey
+                ? { ...x, score: previous.score, review: previous.review }
+                : x,
+            ),
+          );
+        }
+        return false;
       }
-    }
-  }, []);
+    },
+    [],
+  );
 
   return createPortal(
     <div
@@ -381,7 +413,7 @@ export function UserRatings({
               <Loader2 size={22} className="animate-spin text-ink-subtle" />
               {holdForOrder && <span>{t("Loading all ratings")}</span>}
             </div>
-          ) : visible.length === 0 ? (
+          ) : visible.length === 0 && !walkError ? (
             <div className="flex h-40 flex-col items-center justify-center gap-2 text-[13.5px] text-ink-muted">
               {loadingAll && <Loader2 size={18} className="animate-spin text-ink-subtle" />}
               {loadingAll
@@ -394,7 +426,7 @@ export function UserRatings({
             <div className="flex flex-col gap-3">
               {visible.map((r) => (
                 <RatingRow
-                  key={r.itemKey}
+                  key={`${r.mediaType}:${r.itemKey}`}
                   r={r}
                   onOpenMeta={onOpenMeta}
                   onRate={isOwner ? changeRating : undefined}
@@ -404,6 +436,20 @@ export function UserRatings({
                 <div className="mx-auto mt-2 inline-flex items-center gap-2 text-[12.5px] text-ink-subtle">
                   <Loader2 size={14} className="animate-spin" />
                   {t("Loading all ratings")}
+                </div>
+              ) : walkError ? (
+                <div
+                  role="alert"
+                  className="mx-auto mt-2 flex flex-wrap items-center justify-center gap-2 text-[12.5px] text-danger"
+                >
+                  <span>{t("Could not load all ratings. Results may be incomplete.")}</span>
+                  <button
+                    type="button"
+                    onClick={retryWalk}
+                    className="rounded-full border border-edge px-3 py-1 font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
+                  >
+                    {t("Retry")}
+                  </button>
                 </div>
               ) : (
                 cursor && (
@@ -434,7 +480,7 @@ function RatingRow({
 }: {
   r: PublicRating;
   onOpenMeta?: (metaId: string, kind?: string, hint?: { name?: string; poster?: string }) => void;
-  onRate?: (r: PublicRating, score: number, review?: string) => void;
+  onRate?: (r: PublicRating, score: number, review?: string) => Promise<boolean> | void;
 }) {
   const t = useT();
   const [revealed, setRevealed] = useState(false);
@@ -442,6 +488,8 @@ function RatingRow({
   const [draftScore, setDraftScore] = useState(r.score);
   const [draftReview, setDraftReview] = useState(r.review ?? "");
   const [hoverScore, setHoverScore] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
   const poster = useRatingPoster(r.itemKey, r.mediaType, r.title, r.posterUrl);
   const media = useProfileTitle(r.itemKey, r.title, poster, r.mediaType);
   const open = onOpenMeta
@@ -512,27 +560,49 @@ function RatingRow({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  setEditing(false);
-                  onRate?.(r, draftScore, draftReview);
+                onClick={async () => {
+                  if (!onRate || saving) return;
+                  setSaving(true);
+                  setSaveError(false);
+                  try {
+                    const saved = await onRate(r, draftScore, draftReview);
+                    if (saved === false) {
+                      setSaveError(true);
+                      return;
+                    }
+                    setEditing(false);
+                  } catch {
+                    setSaveError(true);
+                  } finally {
+                    setSaving(false);
+                  }
                 }}
-                disabled={draftScore === r.score && draftReview.trim() === (r.review ?? "")}
+                disabled={
+                  saving || (draftScore === r.score && draftReview.trim() === (r.review ?? ""))
+                }
                 className="inline-flex h-9 items-center justify-center rounded-full bg-ink px-5 text-[13px] font-semibold text-canvas transition-transform hover:scale-[1.01] active:scale-[0.98] disabled:opacity-40"
               >
-                {t("Save changes")}
+                {saving ? t("Saving…") : t("Save changes")}
               </button>
               <button
                 type="button"
                 onClick={() => {
                   setDraftScore(r.score);
                   setDraftReview(r.review ?? "");
+                  setSaveError(false);
                   setEditing(false);
                 }}
-                className="inline-flex h-9 items-center justify-center rounded-full border border-edge px-4 text-[13px] font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
+                disabled={saving}
+                className="inline-flex h-9 items-center justify-center rounded-full border border-edge px-4 text-[13px] font-medium text-ink-muted transition-colors hover:bg-elevated hover:text-ink disabled:opacity-40"
               >
                 {t("Cancel")}
               </button>
             </div>
+            {saveError && (
+              <p role="alert" className="text-[12.5px] text-danger">
+                {t("Could not save this rating. Your changes are still here; try again.")}
+              </p>
+            )}
           </div>
         ) : (
           <div className="mt-1 flex items-center gap-2">
