@@ -91,6 +91,7 @@ function ratingsHarness() {
     "@/lib/social/profile-media-meta": {},
     "@/components/context-menu/use-title-context": {},
     "@/lib/i18n": { useT: () => (value: string) => value },
+    "@/views/profile/profile-theme-context": { useProfileThemeSurfaceStyle: () => ({}) },
     "@/lib/social/ratings-api": {
       fetchUserRatings(handle: string, opts: any, signal?: AbortSignal) {
         const job = deferred();
