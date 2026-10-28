@@ -176,9 +176,14 @@ export type QuotedRatingLookup = {
   retry?: () => void;
 };
 
-async function resolve(handle: string, itemKey: string): Promise<QuotedRatingLookup> {
+async function resolve(
+  handle: string,
+  itemKey: string,
+  mediaType: RatingQuote["mediaType"],
+): Promise<QuotedRatingLookup> {
   const history = historyFor(handle);
-  const match = (rating: PublicRating) => rating.itemKey === itemKey;
+  const match = (rating: PublicRating) =>
+    rating.itemKey === itemKey && rating.mediaType === mediaType;
   const hit = history.items.find(match);
   if (hit) return { state: "ready", rating: hit };
   const result = await walk(handle, history, match);
@@ -192,6 +197,7 @@ async function resolve(handle: string, itemKey: string): Promise<QuotedRatingLoo
 export function useQuotedRating(quote: RatingQuote | null): QuotedRatingLookup {
   const handle = quote?.authorHandle ?? "";
   const itemKey = quote?.itemKey ?? "";
+  const mediaType = quote?.mediaType;
   const [lookup, setLookup] = useState<QuotedRatingLookup>({ state: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [sessionRevision, setSessionRevision] = useState(0);
@@ -206,25 +212,25 @@ export function useQuotedRating(quote: RatingQuote | null): QuotedRatingLookup {
   );
 
   useEffect(() => {
-    if (!handle || !itemKey || typeof window === "undefined") return;
+    if (!handle || !itemKey || !mediaType || typeof window === "undefined") return;
     const timer = window.setTimeout(() => setAttempt((n) => n + 1), RATINGS_CACHE_TTL_MS);
     return () => window.clearTimeout(timer);
-  }, [handle, itemKey, attempt, sessionRevision]);
+  }, [handle, itemKey, mediaType, attempt, sessionRevision]);
 
   useEffect(() => {
-    if (!handle || !itemKey) {
+    if (!handle || !itemKey || !mediaType) {
       setLookup({ state: "missing" });
       return;
     }
     let live = true;
     setLookup({ state: "loading" });
-    void resolve(handle, itemKey).then((next) => {
+    void resolve(handle, itemKey, mediaType).then((next) => {
       if (live) setLookup(next);
     });
     return () => {
       live = false;
     };
-  }, [handle, itemKey, attempt, sessionRevision]);
+  }, [handle, itemKey, mediaType, attempt, sessionRevision]);
 
   return lookup.state === "incomplete"
     ? { ...lookup, retry: () => setAttempt((n) => n + 1) }

@@ -469,3 +469,57 @@ test("a cursor that stops advancing ends the walk instead of looping", async () 
   assert.equal(loaded.items.length, 1, "a page served twice is not appended twice");
   assert.equal(loaded.complete, true);
 });
+
+test("quoted ratings resolve by item key and media type, not item key alone", async () => {
+  const h = quotedHarness();
+  await h.open({ ...quote("alice-collision", "tmdb:123"), mediaType: "series" });
+  await h.resolveNext({
+    items: [
+      { itemKey: "tmdb:123", mediaType: "movie", score: 2, title: "Movie", at: "2026-01-01" },
+      { itemKey: "tmdb:123", mediaType: "series", score: 9, title: "Series", at: "2026-01-01" },
+    ],
+  });
+  await h.settle();
+  assert.equal(h.state().state, "ready");
+  assert.equal(h.state().rating.mediaType, "series");
+  assert.equal(h.state().rating.title, "Series");
+  assert.equal(h.state().rating.score, 9);
+});
+
+test("quote lookup walks past a matching ID with a different media type", async () => {
+  const h = quotedHarness();
+  await h.open({ ...quote("alice-collision-pages", "tmdb:123"), mediaType: "series" });
+  await h.resolveNext({
+    items: [
+      { itemKey: "tmdb:123", mediaType: "movie", score: 2, title: "Movie", at: "2026-01-01" },
+    ],
+    nextCursor: "page-two",
+  });
+  await h.resolveNext({
+    items: [
+      { itemKey: "tmdb:123", mediaType: "series", score: 9, title: "Series", at: "2026-01-01" },
+    ],
+  });
+  await h.settle();
+  assert.equal(h.state().state, "ready");
+  assert.equal(h.state().rating.mediaType, "series");
+  assert.equal(h.requests.length, 2);
+});
+
+test("a quote switching media type refreshes from cached ratings of that identity", async () => {
+  const h = quotedHarness();
+  const movieQuote = quote("alice-switch-type", "tmdb:123");
+  await h.open(movieQuote);
+  await h.resolveNext({
+    items: [
+      { itemKey: "tmdb:123", mediaType: "movie", score: 2, title: "Movie", at: "2026-01-01" },
+      { itemKey: "tmdb:123", mediaType: "series", score: 9, title: "Series", at: "2026-01-01" },
+    ],
+  });
+  await h.settle();
+  assert.equal(h.state().rating.mediaType, "movie");
+  await h.open({ ...movieQuote, mediaType: "series" });
+  assert.equal(h.state().state, "ready");
+  assert.equal(h.state().rating.mediaType, "series");
+  assert.equal(h.requests.length, 1, "both ratings were already cached");
+});
